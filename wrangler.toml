@@ -1,0 +1,14 @@
+# ALLOWED_CHAT_IDS é uma lista de IDs de chat do Telegram separados por
+# vírgula. Nesta etapa só há um ID autorizado; quando o bot for multi-tenant
+# a lista será expandida (ou substituída por outra forma de autorização).
+#
+# Os secrets (TELEGRAM_BOT_TOKEN e TELEGRAM_WEBHOOK_SECRET) NÃO ficam aqui.
+# São configurados via `wrangler secret put` (produção) e `.dev.vars` (local).
+
+name = "central-controle-bot-dev"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ALLOWED_CHAT_IDS = "6739663132"

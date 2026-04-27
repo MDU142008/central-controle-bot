@@ -1,0 +1,2 @@
+TELEGRAM_BOT_TOKEN=tu_token_aqui
+TELEGRAM_WEBHOOK_SECRET=generar_con_openssl_rand_hex_32
