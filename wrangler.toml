@@ -12,3 +12,5 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ALLOWED_CHAT_IDS = "6739663132"
+SHEET_ID = "1KYmyHy_3uaqVMv691bFzlonkkUOwvGJmn0NahRdrXuw"
+DRIVE_FOLDER_ID = "1Pkop-z2OsjzcwIH2bEaRu9jhhvr2KB0G"

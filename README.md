@@ -27,6 +27,28 @@ pnpm dev
 openssl rand -hex 32
 ```
 
+## Configurar Google Service Account
+
+El bot usa una Service Account de Google para acceder a Sheets y Drive.
+
+### Crear la SA (una sola vez)
+
+1. Crear proyecto en https://console.cloud.google.com.
+2. Habilitar Google Sheets API y Google Drive API.
+3. IAM y administración → Cuentas de servicio → Crear.
+4. Descargar la JSON key (Claves → Agregar clave → JSON).
+5. Guardar el archivo en una ubicación segura, fuera del repo.
+
+### Compartir recursos con la SA
+
+El email de la SA está en el JSON, campo `client_email`. Tiene forma:
+`<nombre>@<proyecto>.iam.gserviceaccount.com`.
+
+- Sheet: compartir como Editor (necesario para escribir ads en etapas futuras).
+- Carpeta Drive: compartir como Lector (alcanza para leer roteiros).
+
+Destildar "Notificar pessoas" al compartir (la SA no tiene inbox).
+
 ## Deploy
 
 ```bash
@@ -35,6 +57,30 @@ wrangler secret put TELEGRAM_BOT_TOKEN
 wrangler secret put TELEGRAM_WEBHOOK_SECRET
 pnpm deploy
 ```
+
+### Secrets de Etapa 2
+
+```powershell
+# Anthropic API key
+pnpm exec wrangler secret put ANTHROPIC_API_KEY
+
+# Google Service Account JSON (archivo entero, usar -Raw para preservar saltos de línea)
+Get-Content "ruta\al\service-account.json" -Raw | pnpm exec wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON
+```
+
+### Vars (en wrangler.toml)
+
+Editar `[vars]` en `wrangler.toml`:
+
+```toml
+[vars]
+ALLOWED_CHAT_IDS = "..."
+SHEET_ID = ""
+DRIVE_FOLDER_ID = ""
+```
+
+Los IDs salen de las URLs de Google. SHEET_ID y DRIVE_FOLDER_ID no son secretos —
+sin compartir el recurso con la SA no sirven de nada.
 
 ## Configurar webhook en Telegram
 
@@ -55,6 +101,14 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
 ```bash
 curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
 ```
+
+## Comandos del bot
+
+- `/start` — health check, responde "pong".
+- `/teste_claude` — manda prompt de prueba a Sonnet 4.6, devuelve respuesta.
+- `/teste_haiku` — idem con Haiku 4.5.
+- `/teste_sheet` — lee la primera fila de la Sheet configurada.
+- `/teste_drive` — lista archivos en la carpeta de Drive configurada (solo hijos directos, no recursivo).
 
 ## Probar
 
