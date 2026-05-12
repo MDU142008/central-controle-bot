@@ -56,6 +56,9 @@ interface ProcessarEnv {
   ANTHROPIC_API_KEY: string;
   SHEET_ID: string;
   DRIVE_FOLDER_ID: string;
+  // Endpoint do Cloudflare AI Gateway para a Anthropic (opcional). "" ou
+  // undefined = não configurado (cliente Anthropic direto). Ver wrangler.toml.
+  AI_GATEWAY_BASE_URL?: string;
 }
 
 // --- /listar_docs ---
@@ -183,8 +186,10 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     // confianza_fase: "media" (que o gating abaixo vai pegar -> não escreve).
     const fasesValidas = fasesPresentesNosDados(filas, iFase);
 
-    // 4. Extração com Sonnet.
-    const ext = await extrairAdsDoRoteiro(env.ANTHROPIC_API_KEY, texto, fasesValidas);
+    // 4. Extração com Sonnet (via AI Gateway se AI_GATEWAY_BASE_URL estiver setado).
+    const baseURL =
+      env.AI_GATEWAY_BASE_URL && env.AI_GATEWAY_BASE_URL.trim() ? env.AI_GATEWAY_BASE_URL : undefined;
+    const ext = await extrairAdsDoRoteiro(env.ANTHROPIC_API_KEY, texto, fasesValidas, baseURL);
 
     if (ext.ads.length === 0) {
       await ctx.reply(

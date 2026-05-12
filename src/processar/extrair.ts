@@ -11,8 +11,9 @@
 // Decisões (ver MASTER.md / PLAN-etapa3):
 //   - Modelo: "claude-sonnet-4-6" (alias, sem pin de snapshot — decisão consciente
 //     para dev; pinea-se na Etapa 8).
-//   - Cliente Anthropic direto (`new Anthropic({ apiKey })`), sem override de
-//     baseURL. Wirear o AI Gateway depois é só trocar `baseURL` (decisão aberta).
+//   - Cliente Anthropic: `new Anthropic({ apiKey })` direto, OU `new Anthropic({
+//     apiKey, baseURL })` se um `baseURL` (Cloudflare AI Gateway) é passado — ver
+//     o parâmetro `baseURL` de `extrairAdsDoRoteiro`. O request em si não muda.
 //   - Caching de prompt, evals etc. ficam para a Etapa 8.
 //
 // O `tipo` de cada ad o modelo infere do briefing (vídeo/video/reel -> VID;
@@ -126,12 +127,20 @@ export function parsearRespostaExtracao(resp: Anthropic.Message): Extracao {
 
 // Faz a chamada real à API. Usado pelo handler de /processar; os testes não o
 // chamam (eles testam construirRequestExtracao / parsearRespostaExtracao).
+//
+// `baseURL` (opcional): se passado e não-vazio, o cliente Anthropic aponta para
+// esse endpoint — é assim que ligamos o Cloudflare AI Gateway (caché de
+// requests + logging de prompts/respostas + tracking de custo). O endpoint tem a
+// forma `https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_NAME>/anthropic`;
+// o SDK acrescenta `/v1/messages` sozinho, e a API key segue indo no header
+// normal (o gateway a reenvia). Se não vier `baseURL`, cliente direto, como antes.
 export async function extrairAdsDoRoteiro(
   apiKey: string,
   textoRoteiro: string,
   fasesValidas: string[],
+  baseURL?: string,
 ): Promise<Extracao> {
-  const client = new Anthropic({ apiKey });
+  const client = baseURL && baseURL.trim() ? new Anthropic({ apiKey, baseURL }) : new Anthropic({ apiKey });
   const req = construirRequestExtracao(textoRoteiro, fasesValidas);
   // `req` é um subconjunto bem-formado dos parâmetros de messages.create; o
   // cast evita ter que reproduzir toda a tipagem da SDK aqui.

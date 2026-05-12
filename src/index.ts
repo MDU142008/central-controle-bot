@@ -7,8 +7,8 @@ import { tratarTesteDrive } from "./comandos/teste_drive";
 import { tratarProcessar, tratarListarDocs } from "./processar/comando";
 
 // Bindings do Cloudflare Worker. Os secrets vêm de `wrangler secret put`
-// (produção) ou de `.dev.vars` (local). ALLOWED_CHAT_IDS, SHEET_ID e
-// DRIVE_FOLDER_ID vêm de wrangler.toml.
+// (produção) ou de `.dev.vars` (local). ALLOWED_CHAT_IDS, SHEET_ID,
+// DRIVE_FOLDER_ID e (opcionalmente) AI_GATEWAY_BASE_URL vêm de wrangler.toml.
 interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
@@ -17,6 +17,9 @@ interface Env {
   GOOGLE_SERVICE_ACCOUNT_JSON: string;
   SHEET_ID: string;
   DRIVE_FOLDER_ID: string;
+  // Endpoint do Cloudflare AI Gateway para a Anthropic (opcional). "" ou ausente
+  // = não configurado (cliente Anthropic direto). Ver wrangler.toml.
+  AI_GATEWAY_BASE_URL?: string;
 }
 
 // Prompt de teste compartilhado pelos comandos /teste_claude e /teste_haiku.

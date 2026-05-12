@@ -14,3 +14,19 @@ compatibility_flags = ["nodejs_compat"]
 ALLOWED_CHAT_IDS = "6739663132"
 SHEET_ID = "1KYmyHy_3uaqVMv691bFzlonkkUOwvGJmn0NahRdrXuw"
 DRIVE_FOLDER_ID = "1Pkop-z2OsjzcwIH2bEaRu9jhhvr2KB0G"
+
+# AI_GATEWAY_BASE_URL (opcional) — endpoint do Cloudflare AI Gateway para a
+# Anthropic. Se setado, /processar manda as chamadas a Sonnet por aí (caché de
+# requests + logging de prompts/respostas + tracking de custo); se vazio/ausente,
+# o cliente Anthropic vai direto à API.
+#
+# Como configurar:
+#   1. No painel da Cloudflare: AI -> AI Gateway -> criar um gateway (anota o
+#      nome e o teu ACCOUNT_ID).
+#   2. O endpoint pra Anthropic tem esta forma exata (NÃO acrescente /v1/messages,
+#      o SDK faz isso sozinho):
+#        https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_NAME>/anthropic
+#   3. Cola esse endpoint aqui (ou, se preferir não versioná-lo, ponha como
+#      secret: `wrangler secret put AI_GATEWAY_BASE_URL`). A ANTHROPIC_API_KEY
+#      segue como secret, no header normal — o gateway a reenvia.
+# AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_NAME>/anthropic"
