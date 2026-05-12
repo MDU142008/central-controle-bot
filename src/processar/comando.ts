@@ -3,44 +3,53 @@
 // /listar_docs — lista todos os Google Docs sob DRIVE_FOLDER_ID com o seu path
 //   e id. Útil para achar o fileId/link de um roteiro.
 //
-// /processar <link_o_fileId> [responsável] [desde:AD<N>]
+// /processar <link_o_fileId> [responsável] [desde:AD<N>] [aba:<nome>] [--escrever]
 //   1. exporta o Doc como texto;
-//   2. lê headers + filas existentes de `03. ADS NOVOS`;
-//   3. extrai os ads com Sonnet (tool_use forçado);
-//   4. CONFIANÇA-GATING: se o modelo duvida da fase ou do tipo de algum ad
-//      (confiança != alta) ou deixou notas, NÃO escreve — reporta o plano/dúvida
-//      e espera;
-//   5. infere a numeração do NOME por fase+tipo (ou usa `desde:<N>` se foi dado);
-//      se a numeração de algum tipo é ambígua e não há `desde:`, NÃO escreve —
-//      pede ao usuário re-correr com `desde:AD<N>`;
-//   6. monta as filas e as adiciona com `values.append` (NUNCA update/cria estrutura).
+//   2. lê headers + filas existentes da aba destino (por padrão `03. ADS NOVOS`);
+//   3. deriva as FASES VÁLIDAS dos DADOS REAIS (col FASE das filas existentes) —
+//      não de uma lista hardcodeada; se a col FASE está vazia, passa [] e o
+//      prompt de `extrair.ts` instrui o modelo a usar a fase do briefing tal qual
+//      marcando `confianza_fase: "media"`;
+//   4. extrai os ads com Sonnet (tool_use forçado);
+//   5. CONFIANÇA-GATING: se o modelo duvida da fase ou do tipo de algum ad
+//      (confiança != alta) ou deixou notas, NÃO escreve — mesmo com --escrever;
+//   6. infere a numeração do NOME por fase+tipo (ou usa `desde:<N>` se foi dado);
+//      se a numeração de algum tipo é ambígua e não há `desde:`, igual calcula um
+//      PALPITE (max(N)+1 das filas placeholder dessa fase+tipo, ou 1 se não há
+//      nenhuma) e o mostra como palpite, pedindo confirmação — não escreve;
+//   7. DRY-RUN POR PADRÃO: monta o plano completo (fase, confianças, os NOMEs
+//      exatos que geraria, RESPONSÁVEL, aba destino, nº de filas) e o reporta,
+//      terminando com a linha exata para re-correr COM `--escrever`. Só quando
+//      `--escrever` está presente (e nada bloqueia) ele escreve de verdade, com
+//      `values.append` (NUNCA update/cria estrutura).
 //
 // Princípio do projeto: quando não tem certeza de algo ambíguo, o bot PERGUNTA —
-// não assume, não inventa. Autonomamente só adiciona filas + completa células
-// pontuais; nunca cria/reestrutura abas ou pastas.
+// não assume, não inventa. E mesmo "confiado", a nomenclatura é genuinamente
+// incerta (escrevemos numa Sheet real): por isso /processar é dry-run por padrão
+// e sempre convida o humano a corrigir a nomenclatura. Autonomamente só adiciona
+// filas + completa células pontuais; nunca cria/reestrutura abas ou pastas.
 
 import type { Context } from "grammy";
 import { listarDocsRecursivo, exportarDocTexto } from "../google/drive";
 import { lerHeaders, lerFilas, appendFilas } from "../google/sheets";
 import { extrairAdsDoRoteiro } from "./extrair";
-import { inferNumeracao, numeracaoSequencial, faseAbrev, type Tipo } from "./numeracao";
+import {
+  numeracaoSequencial,
+  faseAbrev,
+  derivarFaseAbrevDosNomes,
+  fasesPresentesNosDados,
+  parseNome,
+  type Tipo,
+} from "./numeracao";
 import { buildFilasParaSheet } from "./filas";
 import { extrairFileIdDeArg } from "../util/drive-url";
 import { obterAccessToken } from "../google/auth";
 
-const ABA_ADS_NOVOS = "03. ADS NOVOS";
-
-// TODO(Etapa 4/6): ler estas fases do dropdown da col FASE (data validation,
-// via spreadsheets.get includeGridData=true) em vez de hardcodear. Por ora,
-// hardcoded: são as 6 do dropdown de `03. ADS NOVOS` (de references/sheet-structure.md).
-const FASES_VALIDAS = [
-  "captação",
-  "aquecimento",
-  "lembrete/comprometimento",
-  "contagem regressiva",
-  "avisos",
-  "grupo vip",
-];
+// Aba destino padrão para a Etapa 3 (mono-tenant). Descobrir a aba dinamicamente
+// (ler a estrutura da spreadsheet) é trabalho da Etapa 4 (`/mapear`). Por ora é
+// uma constante — mas o parser aceita um token `aba:<nome>` para sobreescrevê-la,
+// então não estamos *atados* a ela.
+const ABA_ADS_NOVOS_PADRAO = "03. ADS NOVOS";
 
 interface ProcessarEnv {
   GOOGLE_SERVICE_ACCOUNT_JSON: string;
@@ -72,43 +81,80 @@ export async function tratarListarDocs(ctx: Context, env: ProcessarEnv): Promise
 
 // Parseia os args de /processar. Tokens (separados por espaço):
 //   [0]                 link ou fileId  (obrigatório)
-//   um token "desde:<N>" em qualquer posição depois do [0]  (opcional; N pode
-//                        vir como "21" ou "AD21")
-//   o resto             RESPONSÁVEL  (opcional; pode ter espaços; tudo o que
-//                        não for o fileId nem o token desde:)
+//   "desde:<N>"         (opcional; em qualquer posição depois do [0]; só o
+//                        primeiro conta; N pode vir como "21" ou "AD21")
+//   "aba:<nome>"        (opcional; sobreescreve a aba destino; só o primeiro
+//                        conta; o nome NÃO pode ter espaços nesta forma simples)
+//   "--escrever"        (opcional; em qualquer posição; desliga o dry-run)
+//   o resto             RESPONSÁVEL  (opcional; pode ter espaços; tudo o que não
+//                        for o fileId, desde:, aba: nem --escrever)
 interface ArgsProcessar {
   fileIdArg: string | null;
   responsavel: string;
   desde: number | null;
+  aba: string | null;
+  escrever: boolean;
 }
 
 export function parsearArgsProcessar(args: string): ArgsProcessar {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return { fileIdArg: null, responsavel: "", desde: null };
+  if (tokens.length === 0)
+    return { fileIdArg: null, responsavel: "", desde: null, aba: null, escrever: false };
 
   const fileIdArg = tokens[0]!;
   let desde: number | null = null;
+  let aba: string | null = null;
+  let escrever = false;
   const restoResponsavel: string[] = [];
 
   for (const t of tokens.slice(1)) {
-    const m = t.match(/^desde:(?:AD)?(\d+)$/i);
-    if (m && desde === null) {
-      desde = Number(m[1]);
-    } else {
-      restoResponsavel.push(t);
+    if (t === "--escrever") {
+      escrever = true;
+      continue;
     }
+    const mDesde = t.match(/^desde:(?:AD)?(\d+)$/i);
+    if (mDesde && desde === null) {
+      desde = Number(mDesde[1]);
+      continue;
+    }
+    const mAba = t.match(/^aba:(.+)$/i);
+    if (mAba && aba === null) {
+      aba = mAba[1]!;
+      continue;
+    }
+    restoResponsavel.push(t);
   }
 
-  return { fileIdArg, responsavel: restoResponsavel.join(" ").trim(), desde };
+  return { fileIdArg, responsavel: restoResponsavel.join(" ").trim(), desde, aba, escrever };
+}
+
+// Reconstrói a linha de comando "canônica" para re-correr (mostrada no dry-run e
+// nas mensagens de palpite). `extra` são tokens adicionais a juntar (ex.: o
+// `desde:AD<N>` do palpite, e/ou `--escrever`).
+function linhaParaRecorrer(
+  fileId: string,
+  responsavel: string,
+  abaArg: string | null,
+  extra: string[],
+): string {
+  const partes = [`/processar`, fileId];
+  if (responsavel) partes.push(responsavel);
+  if (abaArg) partes.push(`aba:${abaArg}`);
+  partes.push(...extra);
+  return partes.join(" ");
 }
 
 export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: string): Promise<void> {
-  const { fileIdArg, responsavel, desde } = parsearArgsProcessar(args);
+  const { fileIdArg, responsavel, desde, aba: abaArg, escrever } = parsearArgsProcessar(args);
   const fileId = fileIdArg ? extrairFileIdDeArg(fileIdArg) : null;
   if (!fileId) {
-    await ctx.reply("Uso: /processar <link do Doc ou fileId> [responsável] [desde:AD<N>]");
+    await ctx.reply(
+      "Uso: /processar <link do Doc ou fileId> [responsável] [desde:AD<N>] [aba:<nome>] [--escrever]\n" +
+        "Sem --escrever é dry-run: te mostro o que faria e a linha pra confirmar.",
+    );
     return;
   }
+  const aba = abaArg ?? ABA_ADS_NOVOS_PADRAO;
 
   await ctx.reply("Recebi. Processando o roteiro… (pode levar uns segundos)");
 
@@ -120,18 +166,25 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       return;
     }
 
-    // 2. Headers + filas existentes de `03. ADS NOVOS`.
-    const headers = await lerHeaders(env, env.SHEET_ID, ABA_ADS_NOVOS);
+    // 2. Headers + filas existentes da aba destino.
+    const headers = await lerHeaders(env, env.SHEET_ID, aba);
     if (headers.length === 0) {
-      await ctx.reply(`A aba "${ABA_ADS_NOVOS}" não tem cabeçalhos — não posso continuar.`);
+      await ctx.reply(`A aba "${aba}" não tem cabeçalhos — não posso continuar.`);
       return;
     }
     const iNome = headers.findIndex((h) => h.trim().toLowerCase() === "nome");
-    const filas = await lerFilas(env, env.SHEET_ID, ABA_ADS_NOVOS);
+    const iFase = headers.findIndex((h) => h.trim().toLowerCase() === "fase");
+    const filas = await lerFilas(env, env.SHEET_ID, aba);
     const nomesExistentes = iNome >= 0 ? filas.map((f) => f[iNome] ?? "").filter(Boolean) : [];
 
-    // 3. Extração com Sonnet.
-    const ext = await extrairAdsDoRoteiro(env.ANTHROPIC_API_KEY, texto, FASES_VALIDAS);
+    // 3. Fases válidas DERIVADAS DOS DADOS (col FASE das filas existentes), não
+    // hardcodeadas. Se a col FASE está vazia (aba nova sem dados) -> [], e o
+    // prompt de extrair.ts manda o modelo usar a fase do briefing tal qual com
+    // confianza_fase: "media" (que o gating abaixo vai pegar -> não escreve).
+    const fasesValidas = fasesPresentesNosDados(filas, iFase);
+
+    // 4. Extração com Sonnet.
+    const ext = await extrairAdsDoRoteiro(env.ANTHROPIC_API_KEY, texto, fasesValidas);
 
     if (ext.ads.length === 0) {
       await ctx.reply(
@@ -141,13 +194,11 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       return;
     }
 
-    // 4. Confiança-gating da extração.
+    // 5. Confiança-gating da extração. Estas dúvidas BLOQUEIAM a escrita mesmo
+    // com --escrever (a numeração ambígua tem tratamento à parte, abaixo).
     const dudasExtracao: string[] = [];
     if (ext.confianza_fase !== "alta") {
       dudasExtracao.push(`fase "${ext.fase}" (confiança ${ext.confianza_fase})`);
-    }
-    if (!faseAbrev(ext.fase)) {
-      dudasExtracao.push(`a fase "${ext.fase}" não é uma das válidas (${FASES_VALIDAS.join(", ")})`);
     }
     ext.ads.forEach((a, i) => {
       if (a.confianza_tipo !== "alta") {
@@ -156,15 +207,31 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     });
     if (dudasExtracao.length > 0 || ext.notas.trim()) {
       await ctx.reply(
-        `Não escrevi nada. Tem coisas neste roteiro que eu não tenho certeza:\n` +
+        `Não escrevi nada${escrever ? " (mesmo com --escrever — confiança-gating)" : ""}. ` +
+          `Tem coisas neste roteiro que eu não tenho certeza:\n` +
           dudasExtracao.map((d) => `• ${d}`).join("\n") +
           (ext.notas.trim() ? `\nNotas do modelo: ${ext.notas}` : "") +
-          `\n\nPlano proposto: ${ext.ads.length} ad(s) de fase "${ext.fase}". Ajustá o roteiro ou me confirmá e rodá /processar de novo.`,
+          `\n\nPlano proposto: ${ext.ads.length} ad(s) de fase "${ext.fase}". ` +
+          `Ajustá o roteiro (ou passá \`desde:AD<N>\` se for só a numeração) e rodá /processar de novo.`,
       );
       return;
     }
 
-    // 5. Numeração por fase+tipo (agrupando os ads por tipo, na ordem em que aparecem).
+    // 6. Abreviação da fase pro NOME: primeiro DERIVADA dos NOMEs reais dessa
+    // fase na aba; se não há nenhum de onde derivar, cai pra tabela de fallback;
+    // se nem isso -> dúvida, não escreve.
+    const faseAbr =
+      derivarFaseAbrevDosNomes(filas, iFase, iNome, ext.fase) ?? faseAbrev(ext.fase);
+    if (!faseAbr) {
+      await ctx.reply(
+        `Não escrevi nada. Não sei a abreviação da fase "${ext.fase}" pra montar os NOMEs ` +
+          `(não há filas placeholder dessa fase na aba "${aba}" de onde derivar, e não está na ` +
+          `minha tabela de fallback). Me dizé o formato do NOME pra essa fase (ex.: \`AD<N>-XYZ-VID\`).`,
+      );
+      return;
+    }
+
+    // 7. Numeração por fase+tipo (agrupando os ads por tipo, na ordem em que aparecem).
     const tiposNaOrdem: Tipo[] = [];
     const cantPorTipo = new Map<Tipo, number>();
     for (const a of ext.ads) {
@@ -172,42 +239,97 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       cantPorTipo.set(a.tipo, (cantPorTipo.get(a.tipo) ?? 0) + 1);
     }
 
-    const faseAbr = faseAbrev(ext.fase)!; // já validado acima
-    const colaPorTipo = new Map<Tipo, string[]>();
-    const ambiguos: string[] = [];
     // `desde:` só desambigua se o roteiro tem um único tipo (um número de arranque
-    // não dá para dividir entre vários tipos). Se há vários tipos e algum é ambíguo,
-    // pedimos `desde:` mesmo assim (uma execução por tipo).
+    // não dá para dividir entre vários tipos). Se há vários tipos, ignoramos
+    // `desde:` e inferimos/palpitamos cada tipo separadamente.
     const desdeAplicavel = desde !== null && tiposNaOrdem.length === 1;
 
+    // Pra cada tipo: o arranque inferido (`max(N)+1` das filas placeholder dessa
+    // fase+tipo, ou 1 se não há nenhuma) e se isso é um PALPITE (não havia
+    // precedente, ou estamos respeitando um `desde:` explícito vs. um precedente).
+    const planoPorTipo = new Map<Tipo, { desde: number; nomes: string[]; palpite: boolean }>();
     for (const tipo of tiposNaOrdem) {
       const cant = cantPorTipo.get(tipo)!;
+      const precedente = maxNumeroPlaceholder(nomesExistentes, faseAbr, tipo);
       if (desdeAplicavel) {
-        colaPorTipo.set(tipo, numeracaoSequencial(desde!, cant, faseAbr, tipo));
+        // `desde:` explícito manda; só é "palpite" se contradiz um precedente.
+        const inicio = desde!;
+        planoPorTipo.set(tipo, {
+          desde: inicio,
+          nomes: numeracaoSequencial(inicio, cant, faseAbr, tipo),
+          palpite: precedente !== null && inicio !== precedente + 1,
+        });
         continue;
       }
-      const r = inferNumeracao(nomesExistentes, ext.fase, tipo, cant);
-      if (r.ambiguo) ambiguos.push(`${cant} ad(s) ${tipo} de "${ext.fase}"`);
-      else colaPorTipo.set(tipo, [...r.nomes]);
+      // Sem `desde:`: inferimos. Se há precedente -> não é palpite; se não há ->
+      // arrancamos em 1 e marcamos como palpite (pedimos confirmação).
+      const inicio = precedente !== null ? precedente + 1 : 1;
+      planoPorTipo.set(tipo, {
+        desde: inicio,
+        nomes: numeracaoSequencial(inicio, cant, faseAbr, tipo),
+        palpite: precedente === null,
+      });
     }
 
-    if (ambiguos.length > 0) {
+    // NOME final de cada ad, na ordem, consumindo a fila do seu tipo.
+    const colas = new Map<Tipo, string[]>(
+      [...planoPorTipo.entries()].map(([t, p]) => [t, [...p.nomes]]),
+    );
+    const nomesAtribuidos = ext.ads.map((a) => colas.get(a.tipo)!.shift()!);
+
+    const docNome = (await nomeDoDoc(env, fileId)) ?? fileId;
+    const haPalpite = [...planoPorTipo.values()].some((p) => p.palpite);
+
+    // --- Linhas de re-execução ---
+    // Pra um único tipo com palpite, sugerimos `desde:AD<x>` (assim o humano
+    // confirma/ajusta o número). Sem palpite, só `--escrever`.
+    const tokensRecorrer: string[] = [];
+    if (haPalpite && tiposNaOrdem.length === 1) {
+      tokensRecorrer.push(`desde:AD${planoPorTipo.get(tiposNaOrdem[0]!)!.desde}`);
+    }
+    const linhaConfirmar = linhaParaRecorrer(fileId, responsavel, abaArg, [...tokensRecorrer, "--escrever"]);
+
+    const listaNomes = nomesAtribuidos.map((n) => `• ${n}`).join("\n");
+    const padraoVisto = `AD<N>-${faseAbr}-<TIPO>`;
+
+    // 8a. Há palpite (numeração/nomenclatura incerta) -> nunca escreve; pede confirmação.
+    if (haPalpite) {
+      const detalhePalpite = tiposNaOrdem
+        .filter((t) => planoPorTipo.get(t)!.palpite)
+        .map((t) => `${cantPorTipo.get(t)} ad(s) ${t} (arrancando em AD${planoPorTipo.get(t)!.desde})`)
+        .join("; ");
       await ctx.reply(
-        `Não escrevi nada. Não sei que numeração usar para: ${ambiguos.join("; ")}.\n` +
-          `Não há filas placeholder anteriores dessa fase+tipo na aba (ou o padrão não é claro). ` +
-          `Rodá de novo dizendo de que número arrancar, ex.: \`/processar ${fileId} ${responsavel || "[responsável]"} desde:AD13\`.`,
+        `Não escrevi nada${escrever ? " (mesmo com --escrever)" : ""}. Não tenho certeza da ` +
+          `numeração nem da nomenclatura para: ${detalhePalpite} — fase "${ext.fase}", aba "${aba}".\n` +
+          `Não há precedente claro nas filas existentes; meu palpite (padrão \`${padraoVisto}\`):\n` +
+          listaNomes +
+          `\n\nSe estiver certo, re-corra com:\n${linhaConfirmar}\n` +
+          (tiposNaOrdem.length > 1
+            ? `(Vários tipos no roteiro: se quiser fixar o número de um, rode uma vez por tipo passando \`desde:AD<N>\`.)\n`
+            : ``) +
+          `Se a nomenclatura ou o número não forem esses, me diga o formato/número correto.`,
       );
       return;
     }
 
-    // Atribui um NOME a cada ad, na ordem, consumindo a fila do seu tipo.
-    const colas = new Map<Tipo, string[]>(
-      [...colaPorTipo.entries()].map(([t, ns]) => [t, [...ns]]),
-    );
-    const nomesAtribuidos = ext.ads.map((a) => colas.get(a.tipo)!.shift()!);
+    // 8b. Dry-run (sem --escrever) e nada bloqueia -> reporta o plano e a linha pra confirmar.
+    if (!escrever) {
+      await ctx.reply(
+        `DRY-RUN — não escrevi nada (ainda). Isto é o que eu faria em "${aba}":\n` +
+          `• Fase: ${ext.fase} (confiança ${ext.confianza_fase})\n` +
+          `• ${ext.ads.length} fila(s), tipos: ${tiposNaOrdem.map((t) => `${t}×${cantPorTipo.get(t)}`).join(", ")}\n` +
+          `• Responsável: ${responsavel || "(vazio)"}\n` +
+          `• Origem (col LINK COPY): ${docNome}\n` +
+          `• Status: aberto. REVISÃO/GESTOR: FALSE.\n` +
+          `• NOMEs (padrão \`${padraoVisto}\` que vejo nas filas existentes):\n` +
+          listaNomes +
+          `\n\nSe estiver tudo certo, re-corra com:\n${linhaConfirmar}\n` +
+          `Se a nomenclatura não for essa, me avise antes de confirmar.`,
+      );
+      return;
+    }
 
-    // 6. Monta as filas e escreve (append).
-    const docNome = (await nomeDoDoc(env, fileId)) ?? fileId;
+    // 9. --escrever e nada bloqueia -> escreve de verdade (append).
     const novasFilas = buildFilasParaSheet({
       headers,
       fase: ext.fase,
@@ -215,12 +337,14 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       docNome,
       responsavel,
     });
-    await appendFilas(env, env.SHEET_ID, ABA_ADS_NOVOS, novasFilas);
+    await appendFilas(env, env.SHEET_ID, aba, novasFilas);
 
     await ctx.reply(
-      `✅ Pronto. Escrevi ${novasFilas.length} fila(s) em "${ABA_ADS_NOVOS}":\n` +
-        nomesAtribuidos.map((n) => `• ${n}`).join("\n") +
-        `\nFase: ${ext.fase}. Status: aberto. Responsável: ${responsavel || "(vazio)"}. Origem: ${docNome}.`,
+      `✅ Pronto. Escrevi ${novasFilas.length} fila(s) em "${aba}":\n` +
+        listaNomes +
+        `\nFase: ${ext.fase}. Status: aberto. Responsável: ${responsavel || "(vazio)"}. Origem: ${docNome}.\n\n` +
+        `Gerei estes NOMEs seguindo o padrão \`${padraoVisto}\` que vejo nas filas existentes desta fase. ` +
+        `Se a nomenclatura não for essa, me avise — posso corrigir (apagar/reescrever) se você pedir.`,
     );
   } catch (err) {
     await ctx.reply(`Erro em /processar: ${mensagemDeErro(err)}`);
@@ -231,6 +355,20 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
 
 function mensagemDeErro(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// Maior N entre as filas placeholder (`AD<N>-<FASE>-<SUFIJO>`) dessa fase+tipo,
+// ou null se não há nenhuma. Ignora as filas de arquivo finalizado (`L<leva>-…`,
+// outro contador). Base do "palpite" de arranque quando não há precedente óbvio.
+function maxNumeroPlaceholder(nomesExistentes: string[], faseAbr: string, tipo: Tipo): number | null {
+  const ns = nomesExistentes
+    .map(parseNome)
+    .filter(
+      (p): p is NonNullable<ReturnType<typeof parseNome>> =>
+        p !== null && p.formato === "placeholder" && p.faseAbr === faseAbr && p.tipo === tipo,
+    )
+    .map((p) => p.n);
+  return ns.length === 0 ? null : Math.max(...ns);
 }
 
 // Nome do Doc (para a coluna "origem"/LINK COPY). Usa Drive files.get; se falha,

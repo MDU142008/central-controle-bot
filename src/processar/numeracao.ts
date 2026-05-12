@@ -23,7 +23,14 @@ export type Tipo = "VID" | "EST" | "CAR";
 // Abreviação da fase no NOME placeholder (col FASE do dropdown, em minúsculas,
 // -> abreviação). FASE_abrev nos arquivos finalizados costuma ser a mesma (CAP,
 // AQUEC, LEMB, REGRE, ...).
-const FASE_ABREV: Record<string, string> = {
+//
+// Esta tabela é um FALLBACK documentado, não a fonte de verdade: o preferível é
+// derivar a abreviação dos NOMEs reais já presentes na aba (ver
+// `derivarFaseAbrevDosNomes` abaixo). A tabela cobre o caso de uma fase para a
+// qual ainda não há nenhuma fila placeholder de onde derivar. Ler o dropdown
+// real (data validation) e o seu mapeamento fase->abrev é trabalho da Etapa 4
+// (`/mapear`); por ora: dados reais primeiro, esta tabela depois.
+const FASE_ABREV_FALLBACK: Record<string, string> = {
   "captação": "CAP",
   "aquecimento": "AQUEC",
   "lembrete/comprometimento": "LEMB",
@@ -32,8 +39,58 @@ const FASE_ABREV: Record<string, string> = {
   "grupo vip": "VIP",
 };
 
+// Abreviação da fase a partir da tabela de fallback. Devolve null se a fase não
+// está na tabela — o caller deve ter tentado `derivarFaseAbrevDosNomes` antes.
 export function faseAbrev(fase: string): string | null {
-  return FASE_ABREV[fase.trim().toLowerCase()] ?? null;
+  return FASE_ABREV_FALLBACK[fase.trim().toLowerCase()] ?? null;
+}
+
+// Deriva a abreviação de uma fase olhando os NOMEs placeholder reais já na aba.
+// Ex.: se há `AD13-CAP-VID` e a col FASE dessa fila é "captação", então
+// "captação" -> "CAP". `linhas` = filas existentes; `iFase`/`iNome` = índices
+// das colunas FASE e NOME no header. Devolve a abreviação mais frequente entre
+// as filas placeholder dessa fase, ou null se não há nenhuma de onde derivar.
+export function derivarFaseAbrevDosNomes(
+  linhas: string[][],
+  iFase: number,
+  iNome: number,
+  fase: string,
+): string | null {
+  if (iFase < 0 || iNome < 0) return null;
+  const alvo = fase.trim().toLowerCase();
+  const contagem = new Map<string, number>();
+  for (const linha of linhas) {
+    if ((linha[iFase] ?? "").trim().toLowerCase() !== alvo) continue;
+    const parsed = parseNome(linha[iNome] ?? "");
+    if (!parsed || parsed.formato !== "placeholder") continue;
+    contagem.set(parsed.faseAbr, (contagem.get(parsed.faseAbr) ?? 0) + 1);
+  }
+  let melhor: string | null = null;
+  let melhorN = 0;
+  for (const [abr, n] of contagem) {
+    if (n > melhorN) {
+      melhor = abr;
+      melhorN = n;
+    }
+  }
+  return melhor;
+}
+
+// Lista as fases distintas (não vazias) presentes na col FASE das filas reais.
+// Esta é a fonte de "fases válidas" que passamos a Sonnet — derivada dos dados,
+// não hardcodeada. Se a aba está vazia (sem filas), devolve []; nesse caso o
+// prompt de `extrair.ts` instrui o modelo a usar a fase do briefing tal qual e
+// marcar `confianza_fase: "media"` para um humano confirmar.
+export function fasesPresentesNosDados(linhas: string[][], iFase: number): string[] {
+  if (iFase < 0) return [];
+  const vistas = new Map<string, string>(); // chave normalizada -> primeira grafia vista
+  for (const linha of linhas) {
+    const v = (linha[iFase] ?? "").trim();
+    if (!v) continue;
+    const k = v.toLowerCase();
+    if (!vistas.has(k)) vistas.set(k, v);
+  }
+  return [...vistas.values()];
 }
 
 // Sufixo do tipo no NOME placeholder. Atenção: carrossel -> "EST-CARR", não "CAR".

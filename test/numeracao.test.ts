@@ -5,6 +5,8 @@ import {
   buildPlaceholderName,
   numeracaoSequencial,
   parseNome,
+  derivarFaseAbrevDosNomes,
+  fasesPresentesNosDados,
 } from "../src/processar/numeracao";
 
 describe("faseAbrev", () => {
@@ -93,6 +95,65 @@ describe("parseNome", () => {
     expect(parseNome("qualquer coisa")).toBeNull();
     expect(parseNome("AD5-CAP-LOQUESEA")).toBeNull();
     expect(parseNome("")).toBeNull();
+  });
+});
+
+describe("fasesPresentesNosDados", () => {
+  // linhas = filas existentes (linha×coluna); iFase = índice da col FASE no header.
+  const headers = ["FASE", "NOME"];
+  const iFase = headers.indexOf("FASE");
+  it("devolve as fases distintas não vazias da col FASE, na ordem de aparição", () => {
+    const linhas = [
+      ["captação", "AD13-CAP-VID"],
+      ["captação", "AD14-CAP-VID"],
+      ["aquecimento", "AD2-AQUEC-EST"],
+      ["", "AD9-???-VID"],
+    ];
+    expect(fasesPresentesNosDados(linhas, iFase)).toEqual(["captação", "aquecimento"]);
+  });
+  it("aba sem dados -> []", () => {
+    expect(fasesPresentesNosDados([], iFase)).toEqual([]);
+  });
+  it("col FASE inexistente (índice -1) -> []", () => {
+    expect(fasesPresentesNosDados([["x", "y"]], -1)).toEqual([]);
+  });
+  it("normaliza maiúsc/espaços para deduplicar, mas devolve a primeira grafia vista", () => {
+    const linhas = [
+      ["  Captação ", "AD1-CAP-VID"],
+      ["captação", "AD2-CAP-VID"],
+    ];
+    expect(fasesPresentesNosDados(linhas, iFase)).toEqual(["Captação"]);
+  });
+});
+
+describe("derivarFaseAbrevDosNomes", () => {
+  const headers = ["FASE", "NOME"];
+  const iFase = headers.indexOf("FASE");
+  const iNome = headers.indexOf("NOME");
+  it("deriva a abreviação correlacionando col FASE com o NOME placeholder", () => {
+    const linhas = [
+      ["captação", "AD13-CAP-VID"],
+      ["captação", "AD14-CAP-VID"],
+      ["aquecimento", "AD2-AQUEC-EST"],
+    ];
+    expect(derivarFaseAbrevDosNomes(linhas, iFase, iNome, "captação")).toBe("CAP");
+    expect(derivarFaseAbrevDosNomes(linhas, iFase, iNome, "aquecimento")).toBe("AQUEC");
+  });
+  it("ignora filas de arquivo finalizado e NOMEs não reconhecidos", () => {
+    const linhas = [
+      ["captação", "L1-VID-AD54-V1-CAP"], // arquivo: não conta
+      ["captação", "lixo qualquer"], // não parseável
+      ["captação", "AD3-CAP-VID"], // este sim
+    ];
+    expect(derivarFaseAbrevDosNomes(linhas, iFase, iNome, "captação")).toBe("CAP");
+  });
+  it("fase sem nenhuma fila placeholder de onde derivar -> null", () => {
+    const linhas = [["aquecimento", "AD1-AQUEC-VID"]];
+    expect(derivarFaseAbrevDosNomes(linhas, iFase, iNome, "captação")).toBeNull();
+  });
+  it("colunas inexistentes -> null", () => {
+    expect(derivarFaseAbrevDosNomes([["x"]], -1, 0, "captação")).toBeNull();
+    expect(derivarFaseAbrevDosNomes([["x"]], 0, -1, "captação")).toBeNull();
   });
 });
 

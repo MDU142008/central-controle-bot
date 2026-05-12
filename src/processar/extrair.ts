@@ -1,9 +1,12 @@
 // Extração estruturada do roteiro com Sonnet, via `tool_use` forçado.
 //
-// Passamos ao modelo: o texto do roteiro + a lista de fases válidas (as do
-// dropdown da col FASE de `03. ADS NOVOS`). Forçamos a chamada de uma única
-// tool `registrar_ads` — assim a resposta vem garantidamente como um objeto
-// estruturado, não como texto livre.
+// Passamos ao modelo: o texto do roteiro + a lista de fases válidas — derivada
+// dos DADOS REAIS da aba (col FASE das filas existentes), não hardcodeada. Se a
+// lista vier vazia (aba nova sem dados), o prompt instrui o modelo a usar a fase
+// do briefing tal qual e marcar `confianza_fase: "media"` (para um humano
+// confirmar; o handler de /processar não escreve com confiança != "alta").
+// Forçamos a chamada de uma única tool `registrar_ads` — assim a resposta vem
+// garantidamente como um objeto estruturado, não como texto livre.
 //
 // Decisões (ver MASTER.md / PLAN-etapa3):
 //   - Modelo: "claude-sonnet-4-6" (alias, sem pin de snapshot — decisão consciente
@@ -74,10 +77,18 @@ export interface RequestExtracao {
 
 // Monta o request para a API. Separado da chamada real para que os testes
 // possam exercitar o armado sem tocar a rede.
+// `fasesValidas` vem dos dados reais da aba. Se vier vazia, instruímos o modelo
+// a usar a fase do briefing tal qual com confiança "media" (não há lista contra
+// a qual validar — quem confirma é um humano).
 export function construirRequestExtracao(textoRoteiro: string, fasesValidas: string[]): RequestExtracao {
+  const instrucaoFase =
+    fasesValidas.length > 0
+      ? `Fases válidas (use exatamente uma destas strings em "fase"): ${fasesValidas.join(", ")}. ` +
+        `Se o briefing não bate claramente com nenhuma, escolha a mais próxima e marque confianza_fase "media" ou "baja", explicando em "notas".`
+      : `Não tenho uma lista de fases válidas (a aba destino está sem dados). Use a fase como aparece no briefing, em minúsculas, e marque SEMPRE confianza_fase "media" (um humano vai confirmar a nomenclatura).`;
   const conteudo =
     `Você é um assistente que lê briefings de criativos publicitários e extrai os ads a produzir.\n` +
-    `Fases válidas (use exatamente uma destas strings em "fase"): ${fasesValidas.join(", ")}.\n` +
+    `${instrucaoFase}\n` +
     `Regras para "tipo": se o briefing menciona vídeo/video/reel -> VID; estático/imagem/feed/stories -> EST; carrossel/carrusel/cards -> CAR.\n` +
     `Se você NÃO consegue determinar a fase, ou o tipo de algum ad, com segurança, marque a confiança "media" ou "baja" e explique em "notas". Não invente.\n\n` +
     `=== ROTEIRO ===\n${textoRoteiro}`;

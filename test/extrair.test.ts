@@ -22,6 +22,14 @@ describe("construirRequestExtracao", () => {
     expect(req.messages[0]!.role).toBe("user");
   });
 
+  it("com fasesValidas vazia (aba sem dados), instrui o modelo a usar a fase do briefing com confiança media", () => {
+    const req = construirRequestExtracao("texto", []);
+    const messagesJson = JSON.stringify(req.messages);
+    expect(messagesJson).toContain("media");
+    // não menciona "Fases válidas" porque não há lista contra a qual validar
+    expect(messagesJson).not.toContain("Fases válidas");
+  });
+
   it("o input_schema da tool exige fase, confianza_fase, ads e notas", () => {
     expect(TOOL_REGISTRAR_ADS.name).toBe("registrar_ads");
     expect(TOOL_REGISTRAR_ADS.input_schema.required).toEqual([
