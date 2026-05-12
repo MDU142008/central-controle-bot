@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { tratarTesteSheet } from "./comandos/teste_sheet";
 import { tratarTesteDrive } from "./comandos/teste_drive";
+import { tratarProcessar, tratarListarDocs } from "./processar/comando";
 
 // Bindings do Cloudflare Worker. Os secrets vêm de `wrangler secret put`
 // (produção) ou de `.dev.vars` (local). ALLOWED_CHAT_IDS, SHEET_ID e
@@ -169,10 +170,23 @@ app.post("/webhook", async (c) => {
   bot.command("teste_sheet", (ctx) => tratarTesteSheet(ctx, c.env));
   bot.command("teste_drive", (ctx) => tratarTesteDrive(ctx, c.env));
 
+  // /listar_docs e /processar — o vertical slice da Etapa 3.
+  // ctx.match traz o texto depois do comando ("" se não houver).
+  bot.command("listar_docs", (ctx) => tratarListarDocs(ctx, c.env));
+  bot.command("processar", (ctx) => tratarProcessar(ctx, c.env, ctx.match ?? ""));
+
   // 4. Delegamos o processamento ao webhookCallback do grammY.
   // onTimeout: "return" responde 200 mesmo se o handler estourar o tempo
   // limite — sem isso, o default lança exceção e o Telegram reenviaria o
   // update repetidamente (retries fantasma).
+  //
+  // Decisão (Etapa 3, PLAN Task 7 Step 3): NÃO bloqueamos o background. /processar
+  // chama Sonnet + Sheets, que pode passar de 10s; a maior parte é I/O (esperas
+  // a Anthropic/Google), não CPU, então no plano Workers Paid (30s CPU) cabe.
+  // Combinado com onTimeout: "return", o Worker responde 200 mesmo se demorar.
+  // TODO: se em testes reais o Telegram reenviar updates de /processar (retries),
+  // mover o trabalho pesado de tratarProcessar para c.executionCtx.waitUntil()
+  // — devolver 200 já, e processar/responder via ctx.api fora do request.
   const handle = webhookCallback(bot, "hono", { onTimeout: "return" });
   return handle(c);
 });
