@@ -6,7 +6,7 @@ vi.mock("../src/google/auth", () => ({
   obterAccessToken: vi.fn(async () => "TOKEN_FALSO"),
 }));
 
-import { lerHeaders, lerFilas, appendFilas } from "../src/google/sheets";
+import { lerHeaders, lerFilas, appendFilas, listarTitulosAbas } from "../src/google/sheets";
 
 const env = { GOOGLE_SERVICE_ACCOUNT_JSON: "{}" } as any;
 const SHEET = "1ABC";
@@ -100,5 +100,50 @@ describe("appendFilas", () => {
   it("lanza si el append falla", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("forbidden", { status: 403 })));
     await expect(appendFilas(env, SHEET, ABA, [["x"]])).rejects.toThrow(/403/);
+  });
+});
+
+describe("listarTitulosAbas", () => {
+  it("hace GET ?fields=sheets.properties.title y devuelve los títulos en orden", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = decodeURIComponent(url);
+      expect(u).toContain(`/spreadsheets/${SHEET}?fields=sheets.properties.title`);
+      return respostaJson({
+        sheets: [
+          { properties: { title: "00. Links importantes" } },
+          { properties: { title: "03. ADS NOVOS" } },
+          { properties: { title: "04. ADS REAP" } },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const titulos = await listarTitulosAbas(env, SHEET);
+    expect(titulos).toEqual(["00. Links importantes", "03. ADS NOVOS", "04. ADS REAP"]);
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({
+      headers: { Authorization: "Bearer TOKEN_FALSO" },
+    });
+  });
+
+  it("filtra entradas sem title (ignora propriedades vazias)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        respostaJson({
+          sheets: [{ properties: { title: "A" } }, { properties: {} }, {}],
+        }),
+      ),
+    );
+    expect(await listarTitulosAbas(env, SHEET)).toEqual(["A"]);
+  });
+
+  it("devuelve [] si la respuesta no trae sheets", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => respostaJson({})));
+    expect(await listarTitulosAbas(env, SHEET)).toEqual([]);
+  });
+
+  it("lanza si la API responde con error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("denied", { status: 403 })));
+    await expect(listarTitulosAbas(env, SHEET)).rejects.toThrow(/403/);
   });
 });
