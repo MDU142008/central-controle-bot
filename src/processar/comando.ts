@@ -31,7 +31,7 @@
 
 import type { Context } from "grammy";
 import { listarDocsRecursivo, exportarDocTexto } from "../google/drive";
-import { lerHeaders, lerFilas, appendFilas } from "../google/sheets";
+import { lerHeaders, lerFilas, appendFilas, listarTitulosAbas } from "../google/sheets";
 import { extrairAdsDoRoteiro } from "./extrair";
 import {
   numeracaoSequencial,
@@ -42,14 +42,16 @@ import {
   type Tipo,
 } from "./numeracao";
 import { buildFilasParaSheet } from "./filas";
+import { resolverAbaAdsNovos } from "./aba";
 import { extrairFileIdDeArg } from "../util/drive-url";
 import { obterAccessToken } from "../google/auth";
 
-// Aba destino padrão para a Etapa 3 (mono-tenant). Descobrir a aba dinamicamente
-// (ler a estrutura da spreadsheet) é trabalho da Etapa 4 (`/mapear`). Por ora é
-// uma constante — mas o parser aceita um token `aba:<nome>` para sobreescrevê-la,
-// então não estamos *atados* a ela.
-const ABA_ADS_NOVOS_PADRAO = "03. ADS NOVOS";
+// Aba destino: o bot DESCOBRE qual aba "ads novos" existe na Sheet (via
+// `resolverAbaAdsNovos` sobre os títulos reais) — não é hardcoded, pode variar
+// entre experts/launches. A descoberta robusta com confirmação humana é
+// trabalho da Etapa 4 (`/mapear`); por ora fazemos matching leve por nome
+// normalizado. O parser aceita `aba:<nome>` pra forçar uma aba específica
+// (validamos que existe na Sheet).
 
 interface ProcessarEnv {
   GOOGLE_SERVICE_ACCOUNT_JSON: string;
@@ -157,11 +159,47 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     );
     return;
   }
-  const aba = abaArg ?? ABA_ADS_NOVOS_PADRAO;
-
   await ctx.reply("Recebi. Processando o roteiro… (pode levar uns segundos)");
 
   try {
+    // Pré-processo: descobrir qual é a aba destino na Sheet (não assumimos um
+    // nome fixo — pode ser "03. ADS NOVOS", "3 ads novos", "Ads Novos", etc.).
+    // Se o usuário passou `aba:<nome>`, validamos que essa aba existe na Sheet.
+    const titulosAbas = await listarTitulosAbas(env, env.SHEET_ID);
+    let aba: string;
+    if (abaArg) {
+      if (!titulosAbas.includes(abaArg)) {
+        await ctx.reply(
+          `Não encontrei a aba "${abaArg}" na Sheet. As abas existentes são:\n` +
+            titulosAbas.map((t) => `• ${t}`).join("\n"),
+        );
+        return;
+      }
+      aba = abaArg;
+    } else {
+      const r = resolverAbaAdsNovos(titulosAbas);
+      if (r.tipo === "nenhuma") {
+        await ctx.reply(
+          `Não achei uma aba parecida com "ads novos" na Sheet ` +
+            `(procuro variações tipo "03. ADS NOVOS", "3 ads novos", "Ads Novos", etc.).\n` +
+            `As abas existentes são:\n` +
+            titulosAbas.map((t) => `• ${t}`).join("\n") +
+            `\n\nSe a aba certa está na lista com outro nome, re-corra com ` +
+            "`aba:<nome exato sem espaços>` ou peça pra renomear a aba.",
+        );
+        return;
+      }
+      if (r.tipo === "varias") {
+        await ctx.reply(
+          `Achei várias abas que parecem "ads novos":\n` +
+            r.candidatos.map((t) => `• ${t}`).join("\n") +
+            "\n\nRe-corra com `aba:<nome exato>` pra escolher uma.",
+        );
+        return;
+      }
+      aba = r.titulo;
+    }
+
     // 1. Texto do roteiro.
     const texto = await exportarDocTexto(env, fileId);
     if (!texto.trim()) {

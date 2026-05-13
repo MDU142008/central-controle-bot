@@ -85,6 +85,23 @@ export async function appendFilas(
   };
 }
 
+// Lista os títulos das abas da spreadsheet. Usa `?fields=sheets.properties.title`
+// pra trazer só os nomes (sem grid/formatos) — dezenas a centenas de KB mais
+// leve que o GET sem filtro. Ordem da resposta = ordem das abas na Sheet.
+export async function listarTitulosAbas(env: AuthEnv, sheetId: string): Promise<string[]> {
+  const token = await obterAccessToken(env);
+  const url = `${BASE}/${encodeURIComponent(sheetId)}?fields=sheets.properties.title`;
+  const resposta = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!resposta.ok) {
+    const corpo = await resposta.text();
+    throw new Error(`Falha ao listar abas (status ${resposta.status}): ${corpo}`);
+  }
+  const dados = (await resposta.json()) as {
+    sheets?: { properties?: { title?: string } }[];
+  };
+  return (dados.sheets ?? []).map((s) => s.properties?.title ?? "").filter(Boolean);
+}
+
 // --- Compat: o smoke test da Etapa 2 (/teste_sheet) ainda usa isto ---
 
 // Lê a primeira linha (range A1:Z1) da primeira aba da spreadsheet.
