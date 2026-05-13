@@ -79,12 +79,15 @@ function extractChatId(update: unknown): number | undefined {
 // Helper compartilhado pelos dois comandos de teste: chama o SDK da Anthropic
 // e devolve o texto da resposta. Lança em caso de erro do SDK ou de resposta
 // sem bloco de texto — o caller (handler do grammY) é responsável pelo catch.
+// Se baseURL vier (AI_GATEWAY_BASE_URL setado), a chamada passa pelo Cloudflare
+// AI Gateway (logging + métricas); se vier vazio/undefined, vai direto à API.
 async function chamarClaude(
   apiKey: string,
   modelo: string,
   prompt: string,
+  baseURL?: string,
 ): Promise<string> {
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic(baseURL ? { apiKey, baseURL } : { apiKey });
   const response = await client.messages.create({
     model: modelo,
     max_tokens: 300,
@@ -144,6 +147,7 @@ app.post("/webhook", async (c) => {
         c.env.ANTHROPIC_API_KEY,
         MODELO_SONNET,
         PROMPT_TESTE,
+        c.env.AI_GATEWAY_BASE_URL,
       );
       await ctx.reply(texto);
     } catch (err) {
@@ -159,6 +163,7 @@ app.post("/webhook", async (c) => {
         c.env.ANTHROPIC_API_KEY,
         MODELO_HAIKU,
         PROMPT_TESTE,
+        c.env.AI_GATEWAY_BASE_URL,
       );
       await ctx.reply(texto);
     } catch (err) {

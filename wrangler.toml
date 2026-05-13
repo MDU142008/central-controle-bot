@@ -10,6 +10,10 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Cuenta Cloudflare donde se deploya el Worker (la que tiene Workers Paid).
+# Pineado explícito para evitar ambigüedad si el login ve varias cuentas.
+account_id = "b10b614b08eeb495d4f32c607ed84d43"
+
 [vars]
 ALLOWED_CHAT_IDS = "6739663132"
 SHEET_ID = "1KYmyHy_3uaqVMv691bFzlonkkUOwvGJmn0NahRdrXuw"
@@ -29,4 +33,4 @@ DRIVE_FOLDER_ID = "1Pkop-z2OsjzcwIH2bEaRu9jhhvr2KB0G"
 #   3. Cola esse endpoint aqui (ou, se preferir não versioná-lo, ponha como
 #      secret: `wrangler secret put AI_GATEWAY_BASE_URL`). A ANTHROPIC_API_KEY
 #      segue como secret, no header normal — o gateway a reenvia.
-# AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1/<ACCOUNT_ID>/<GATEWAY_NAME>/anthropic"
+AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1/b10b614b08eeb495d4f32c607ed84d43/cc-bot/anthropic"
