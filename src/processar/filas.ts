@@ -49,9 +49,15 @@ export interface BuildFilasInput {
 // requer batchUpdate com chipRuns, mais complexo) mas é clicável e mostra o
 // nome do Doc como label. Aspas duplas no nome são escapadas duplicando-as
 // (convenção de fórmulas Sheets).
+//
+// ⚠️ Locale: o separador de argumentos depende do locale da Sheet. Em pt-BR /
+// es / fr / de o separador é ";" (porque vírgula é decimal). Em en-US é ",".
+// As Sheets do equipo são pt-BR (a do Dani confirmado em 2026-05-14), por isso
+// hardcodeamos ";". Quando virar multi-tenant na Etapa 4, ler o locale da
+// Sheet via `spreadsheets.get?fields=properties.locale` e adaptar.
 export function construirLinkCopyFormula(docNome: string, docUrl: string): string {
   const nomeEscapado = docNome.replace(/"/g, '""');
-  return `=HYPERLINK("${docUrl}", "${nomeEscapado}")`;
+  return `=HYPERLINK("${docUrl}"; "${nomeEscapado}")`;
 }
 
 // Devolve filas (matriz linha×coluna) alinhadas a `headers` por NOME de coluna.

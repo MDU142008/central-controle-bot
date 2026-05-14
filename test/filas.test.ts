@@ -34,12 +34,12 @@ describe("construirLinkCopyFormula", () => {
   it("constrói =HYPERLINK(url, nome)", () => {
     expect(
       construirLinkCopyFormula("1. Criativos de Captação - primeira Leva", DOC_URL),
-    ).toBe(`=HYPERLINK("${DOC_URL}", "1. Criativos de Captação - primeira Leva")`);
+    ).toBe(`=HYPERLINK("${DOC_URL}"; "1. Criativos de Captação - primeira Leva")`);
   });
 
   it("escapa aspas duplas no nome (doubling, convenção Sheets)", () => {
     expect(construirLinkCopyFormula('Doc com "aspas"', DOC_URL)).toBe(
-      `=HYPERLINK("${DOC_URL}", "Doc com ""aspas""")`,
+      `=HYPERLINK("${DOC_URL}"; "Doc com ""aspas""")`,
     );
   });
 });
@@ -62,7 +62,7 @@ describe("buildFilasParaSheet", () => {
       "captação",
       "AD13-CAP-VID",
       "aberto",
-      `=HYPERLINK("${DOC_URL}", "1. Criativos de Captação - primeira Leva")`,
+      `=HYPERLINK("${DOC_URL}"; "1. Criativos de Captação - primeira Leva")`,
       "Edição de vídeo",
       "",
       "aberto",
