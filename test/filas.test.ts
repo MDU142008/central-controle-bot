@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { tipoToDesignOuEdicao, buildFilasParaSheet } from "../src/processar/filas";
+import {
+  tipoToDesignOuEdicao,
+  buildFilasParaSheet,
+  construirLinkCopyFormula,
+} from "../src/processar/filas";
+
+const DOC_URL = "https://docs.google.com/document/d/1abc/edit";
 
 // Headers reais de `03. ADS NOVOS` (de references/sheet-structure.md).
 const HEADERS = [
@@ -24,8 +30,22 @@ describe("tipoToDesignOuEdicao", () => {
   });
 });
 
+describe("construirLinkCopyFormula", () => {
+  it("constrói =HYPERLINK(url, nome)", () => {
+    expect(
+      construirLinkCopyFormula("1. Criativos de Captação - primeira Leva", DOC_URL),
+    ).toBe(`=HYPERLINK("${DOC_URL}", "1. Criativos de Captação - primeira Leva")`);
+  });
+
+  it("escapa aspas duplas no nome (doubling, convenção Sheets)", () => {
+    expect(construirLinkCopyFormula('Doc com "aspas"', DOC_URL)).toBe(
+      `=HYPERLINK("${DOC_URL}", "Doc com ""aspas""")`,
+    );
+  });
+});
+
 describe("buildFilasParaSheet", () => {
-  it("arma uma fila por ad, mapeada por nome de header (docNome vai na col D = LINK COPY)", () => {
+  it("arma uma fila por ad, mapeada por nome de header (LINK COPY = HYPERLINK formula)", () => {
     const filas = buildFilasParaSheet({
       headers: HEADERS,
       fase: "captação",
@@ -34,6 +54,7 @@ describe("buildFilasParaSheet", () => {
         { nome: "AD14-CAP-VID", tipo: "VID" },
       ],
       docNome: "1. Criativos de Captação - primeira Leva",
+      docUrl: DOC_URL,
       responsavel: "Sergio",
     });
     expect(filas).toHaveLength(2);
@@ -41,7 +62,7 @@ describe("buildFilasParaSheet", () => {
       "captação",
       "AD13-CAP-VID",
       "aberto",
-      "1. Criativos de Captação - primeira Leva",
+      `=HYPERLINK("${DOC_URL}", "1. Criativos de Captação - primeira Leva")`,
       "Edição de vídeo",
       "",
       "aberto",
@@ -62,6 +83,7 @@ describe("buildFilasParaSheet", () => {
         { nome: "AD4-LEMB-EST", tipo: "EST" },
       ],
       docNome: "2.1 Criativos De Aquecimento Estático",
+      docUrl: DOC_URL,
       responsavel: "Wesley",
     });
     expect(filas[0]![4]).toBe("Design"); // índice de DESIGN OU EDIÇÃO
@@ -74,6 +96,7 @@ describe("buildFilasParaSheet", () => {
       fase: "captação",
       ads: [{ nome: "AD13-CAP-VID", tipo: "VID" }],
       docNome: "X",
+      docUrl: DOC_URL,
       responsavel: "",
     });
     expect(filas[0]![7]).toBe(""); // índice de RESPONSÁVEL
@@ -85,6 +108,7 @@ describe("buildFilasParaSheet", () => {
       fase: "captação",
       ads: [{ nome: "AD13-CAP-VID", tipo: "VID" }],
       docNome: "X",
+      docUrl: DOC_URL,
       responsavel: "Sergio",
     });
     expect(filas[0]).toHaveLength(HEADERS.length);
@@ -99,6 +123,7 @@ describe("buildFilasParaSheet", () => {
       fase: "captação",
       ads: [{ nome: "AD13-CAP-VID", tipo: "VID" }],
       docNome: "X",
+      docUrl: DOC_URL,
       responsavel: "Sergio",
     });
     expect(filas[0]).toEqual(["AD13-CAP-VID", "captação", "aberto", "Sergio", "Edição de vídeo"]);

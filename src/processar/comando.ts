@@ -344,6 +344,7 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     const nomesAtribuidos = ext.ads.map((a) => colas.get(a.tipo)!.shift()!);
 
     const docNome = (await nomeDoDoc(env, fileId)) ?? fileId;
+    const docUrl = `https://docs.google.com/document/d/${fileId}/edit`;
     const haPalpite = [...planoPorTipo.values()].some((p) => p.palpite);
 
     // --- Linhas de re-execução ---
@@ -408,6 +409,7 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       fase: ext.fase,
       ads: ext.ads.map((a, i) => ({ nome: nomesAtribuidos[i]!, tipo: a.tipo })),
       docNome,
+      docUrl,
       responsavel,
     });
     const filaInicio = acharFilaInicio(filas, iFase, iNome, novasFilas.length);

@@ -39,8 +39,19 @@ export interface BuildFilasInput {
   headers: string[];
   fase: string; // como o dropdown, minúsculas (ex.: "captação")
   ads: AdNovo[];
-  docNome: string; // nome do Doc roteiro de origem (vai na col "LINK COPY")
+  docNome: string; // nome do Doc roteiro (label do link)
+  docUrl: string; // URL canônica do Doc (https://docs.google.com/document/d/<id>/edit)
   responsavel: string; // "" se não foi dado
+}
+
+// Constrói uma fórmula HYPERLINK que vira link clicável azul no Sheet quando
+// escrita com valueInputOption=USER_ENTERED. Não é o smart chip de Drive (esse
+// requer batchUpdate com chipRuns, mais complexo) mas é clicável e mostra o
+// nome do Doc como label. Aspas duplas no nome são escapadas duplicando-as
+// (convenção de fórmulas Sheets).
+export function construirLinkCopyFormula(docNome: string, docUrl: string): string {
+  const nomeEscapado = docNome.replace(/"/g, '""');
+  return `=HYPERLINK("${docUrl}", "${nomeEscapado}")`;
 }
 
 // Devolve filas (matriz linha×coluna) alinhadas a `headers` por NOME de coluna.
@@ -70,7 +81,7 @@ export function buildFilasParaSheet(input: BuildFilasInput): string[][] {
     set(iFase, input.fase);
     set(iNome, ad.nome);
     set(iCopy, "aberto");
-    set(iLinkCopy, input.docNome);
+    set(iLinkCopy, construirLinkCopyFormula(input.docNome, input.docUrl));
     set(iDesign, tipoToDesignOuEdicao(ad.tipo));
     set(iStatus, "aberto");
     set(iResp, input.responsavel);
