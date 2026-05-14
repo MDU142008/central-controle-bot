@@ -61,7 +61,10 @@ export const TOOL_REGISTRAR_ADS = {
       },
       notas: {
         type: "string",
-        description: "O que ficou duvidoso ou ambíguo, se algo. Vazio se tudo claro.",
+        description:
+          "DÚVIDAS apenas — não use para descrições, contagens ou observações estratégicas. " +
+          "Deve ser \"\" (string vazia) se confianza_fase=alta e todos os confianza_tipo=alta. " +
+          "Use SÓ pra explicar uma ambiguidade que justifique pedir confirmação humana.",
       },
     },
     required: ["fase", "confianza_fase", "ads", "notas"],
@@ -91,7 +94,8 @@ export function construirRequestExtracao(textoRoteiro: string, fasesValidas: str
     `Você é um assistente que lê briefings de criativos publicitários e extrai os ads a produzir.\n` +
     `${instrucaoFase}\n` +
     `Regras para "tipo": se o briefing menciona vídeo/video/reel -> VID; estático/imagem/feed/stories -> EST; carrossel/carrusel/cards -> CAR.\n` +
-    `Se você NÃO consegue determinar a fase, ou o tipo de algum ad, com segurança, marque a confiança "media" ou "baja" e explique em "notas". Não invente.\n\n` +
+    `Se você NÃO consegue determinar a fase, ou o tipo de algum ad, com segurança, marque a confiança "media" ou "baja" e explique em "notas". Não invente.\n` +
+    `O campo "notas" é APENAS pra dúvidas: descrições do briefing, contagens, análises e observações estratégicas NÃO vão em notas. Se a fase e todos os tipos foram detectados com confianza "alta", deixe notas como string vazia ("").\n\n` +
     `=== ROTEIRO ===\n${textoRoteiro}`;
   return {
     model: MODELO_SONNET,

@@ -181,20 +181,28 @@ app.post("/webhook", async (c) => {
   // /listar_docs e /processar — o vertical slice da Etapa 3.
   // ctx.match traz o texto depois do comando ("" se não houver).
   bot.command("listar_docs", (ctx) => tratarListarDocs(ctx, c.env));
-  bot.command("processar", (ctx) => tratarProcessar(ctx, c.env, ctx.match ?? ""));
+
+  // /processar usa c.executionCtx.waitUntil() pra sobreviver ao timeout de 10s
+  // do webhookCallback. Sem isso, o Worker era terminado depois que o handler
+  // do grammY "retornava" no timeout — a chamada a Sonnet completava (gastando
+  // crédito da API) mas o nosso código que escreve na Sheet e responde ao chat
+  // nunca rodava (bug detectado 2026-05-13 com logs em wrangler tail). O
+  // catch interno de tratarProcessar trata erros; o .catch aqui é defense-in-
+  // depth caso o próprio ctx.reply do catch falhe (Telegram down etc.).
+  bot.command("processar", (ctx) => {
+    c.executionCtx.waitUntil(
+      tratarProcessar(ctx, c.env, ctx.match ?? "").catch((err) => {
+        console.error("[/processar] erro não capturado no waitUntil:", err);
+      }),
+    );
+  });
 
   // 4. Delegamos o processamento ao webhookCallback do grammY.
   // onTimeout: "return" responde 200 mesmo se o handler estourar o tempo
   // limite — sem isso, o default lança exceção e o Telegram reenviaria o
-  // update repetidamente (retries fantasma).
-  //
-  // Decisão (Etapa 3, PLAN Task 7 Step 3): NÃO bloqueamos o background. /processar
-  // chama Sonnet + Sheets, que pode passar de 10s; a maior parte é I/O (esperas
-  // a Anthropic/Google), não CPU, então no plano Workers Paid (30s CPU) cabe.
-  // Combinado com onTimeout: "return", o Worker responde 200 mesmo se demorar.
-  // TODO: se em testes reais o Telegram reenviar updates de /processar (retries),
-  // mover o trabalho pesado de tratarProcessar para c.executionCtx.waitUntil()
-  // — devolver 200 já, e processar/responder via ctx.api fora do request.
+  // update repetidamente (retries fantasma). Combinado com o waitUntil de
+  // /processar acima, o Worker responde 200 a Telegram em ≤10s e segue
+  // processando em background até terminar (sem ser morto pela Cloudflare).
   const handle = webhookCallback(bot, "hono", { onTimeout: "return" });
   return handle(c);
 });

@@ -6,7 +6,13 @@ vi.mock("../src/google/auth", () => ({
   obterAccessToken: vi.fn(async () => "TOKEN_FALSO"),
 }));
 
-import { lerHeaders, lerFilas, appendFilas, listarTitulosAbas } from "../src/google/sheets";
+import {
+  lerHeaders,
+  lerFilas,
+  escreverFilas,
+  acharFilaInicio,
+  listarTitulosAbas,
+} from "../src/google/sheets";
 
 const env = { GOOGLE_SERVICE_ACCOUNT_JSON: "{}" } as any;
 const SHEET = "1ABC";
@@ -76,30 +82,127 @@ describe("lerFilas", () => {
   });
 });
 
-describe("appendFilas", () => {
-  it("hace POST a :append con USER_ENTERED + INSERT_ROWS y el body {values}, devuelve updatedRange/updatedRows", async () => {
+describe("acharFilaInicio", () => {
+  // iColA=0 (FASE), iColB=1 (NOME) — discriminador típico
+  it("devuelve la primera fila vacía consecutiva cuando hay un bloque suficiente", () => {
+    // filas[0]=row2 con datos, filas[1..]=row3+ vacías. cantidad=3 cabe arrancando en row3.
+    const filas = [
+      ["captação", "AD1-CAP-VID"],
+      [], // row 3 vazia
+      [], // row 4 vazia
+      [], // row 5 vazia
+      ["captação", "AD2-CAP-VID"], // row 6 con datos
+    ];
+    expect(acharFilaInicio(filas, 0, 1, 3)).toBe(3);
+  });
+
+  it("salta filas que tienen FASE o NOME (= 'parte de la data' aunque otras cols estén vacías)", () => {
+    const filas = [
+      ["captação", "AD1-CAP-VID"], // row 2: dados
+      ["captação", "AD2-CAP-VID"], // row 3: dados
+      ["captação", "AD3-CAP-VID"], // row 4: dados
+      [], // row 5: vacía
+      [], // row 6: vacía
+    ];
+    expect(acharFilaInicio(filas, 0, 1, 2)).toBe(5);
+  });
+
+  it("salta bloques vacíos demasiado chicos hasta encontrar uno del tamaño pedido", () => {
+    const filas = [
+      [], // row 2 vazia (bloque de 1)
+      ["captação", "AD1-CAP-VID"], // row 3: dados (rompe)
+      [], // row 4 vazia
+      [], // row 5 vazia
+      [], // row 6 vazia (bloque de 3, cabe cantidad=3)
+    ];
+    expect(acharFilaInicio(filas, 0, 1, 3)).toBe(4);
+  });
+
+  it("considera vazia uma row mesmo se há texto em outra coluna (não FASE/NOME)", () => {
+    const filas = [
+      ["", "", "valor en col C"], // row 2: A y B vacías -> vazia desde nossa ótica
+      ["", "", ""], // row 3 vazia
+    ];
+    expect(acharFilaInicio(filas, 0, 1, 2)).toBe(2);
+  });
+
+  it("fallback: si no hay bloque suficiente, devuelve la fila siguiente al último dato", () => {
+    const filas = [
+      ["captação", "AD1-CAP-VID"], // row 2: dados
+      ["captação", "AD2-CAP-VID"], // row 3: dados
+      [], // row 4: vazia
+    ];
+    // Pido 5 filas pero solo hay 1 vacía -> fallback = última con dados + 1 = 4
+    expect(acharFilaInicio(filas, 0, 1, 5)).toBe(4);
+  });
+
+  it("Sheet completamente vacía (solo header) -> escribe en row 2", () => {
+    expect(acharFilaInicio([], 0, 1, 3)).toBe(2);
+  });
+
+  it("Sheet só com ghost-rows (toda fila vazia en A/B) -> escribe en row 2", () => {
+    const filas = [[], [], [], [], []];
+    expect(acharFilaInicio(filas, 0, 1, 3)).toBe(2);
+  });
+
+  it("trabaja con iColA/iColB no necesariamente 0/1 (header en otras posiciones)", () => {
+    // Imaginar headers donde FASE está en col índice 2 y NOME en 3
+    const filas = [
+      ["", "", "captação", "AD1-CAP-VID"], // tiene dados en 2/3 -> no vazia
+      ["", "", "", ""], // vazia em 2/3
+    ];
+    expect(acharFilaInicio(filas, 2, 3, 1)).toBe(3);
+  });
+});
+
+describe("escreverFilas", () => {
+  it("hace PUT a values.update con USER_ENTERED y range A<inicio>:K<fin>", async () => {
     const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
       const u = decodeURIComponent(url);
-      expect(u).toContain(`/values/'${ABA}'!A1:append`);
+      expect(u).toContain(`/values/'${ABA}'!A6:C7`);
       expect(url).toContain("valueInputOption=USER_ENTERED");
-      expect(url).toContain("insertDataOption=INSERT_ROWS");
-      expect(init.method).toBe("POST");
+      expect(url).not.toContain("insertDataOption"); // PUT/update, no append
+      expect(init.method).toBe("PUT");
       expect(JSON.parse(init.body as string)).toEqual({
-        values: [["captação", "AD15-CAP-VID", "aberto"]],
+        values: [
+          ["captação", "AD4-CAP-VID", "aberto"],
+          ["captação", "AD5-CAP-VID", "aberto"],
+        ],
       });
       return respostaJson({
-        updates: { updatedRange: "'03. ADS NOVOS'!A1007:K1007", updatedRows: 1 },
+        updatedRange: "'03. ADS NOVOS'!A6:C7",
+        updatedRows: 2,
       });
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const res = await appendFilas(env, SHEET, ABA, [["captação", "AD15-CAP-VID", "aberto"]]);
-    expect(res).toEqual({ updatedRange: "'03. ADS NOVOS'!A1007:K1007", updatedRows: 1 });
+    const res = await escreverFilas(env, SHEET, ABA, 6, [
+      ["captação", "AD4-CAP-VID", "aberto"],
+      ["captação", "AD5-CAP-VID", "aberto"],
+    ]);
+    expect(res).toEqual({ updatedRange: "'03. ADS NOVOS'!A6:C7", updatedRows: 2 });
   });
 
-  it("lanza si el append falla", async () => {
+  it("calcula la letra de la columna final correctamente (11 cols -> K)", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(decodeURIComponent(url)).toContain(`/values/'${ABA}'!A6:K6`);
+      return respostaJson({ updatedRange: "'X'!A6:K6", updatedRows: 1 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await escreverFilas(env, SHEET, ABA, 6, [["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]]);
+  });
+
+  it("devolve {updatedRows: 0} sem chamar fetch quando valores está vazio", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await escreverFilas(env, SHEET, ABA, 6, []);
+    expect(res).toEqual({ updatedRows: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lanza si la API devuelve error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("forbidden", { status: 403 })));
-    await expect(appendFilas(env, SHEET, ABA, [["x"]])).rejects.toThrow(/403/);
+    await expect(escreverFilas(env, SHEET, ABA, 6, [["x"]])).rejects.toThrow(/403/);
   });
 });
 

@@ -41,32 +41,85 @@ export async function lerFilas(env: AuthEnv, sheetId: string, aba: string): Prom
   return buscarValores(token, sheetId, rangeComAba(aba, "A2:ZZ"));
 }
 
-export interface ResultadoAppend {
-  // Range A1 que a API efetivamente escreveu, ex.: "'03. ADS NOVOS'!A1007:K1009".
+export interface ResultadoEscrita {
+  // Range A1 que a API efetivamente escreveu, ex.: "'03. ADS NOVOS'!A6:K16".
   updatedRange?: string;
   updatedRows?: number;
 }
 
-// Adiciona linhas ao final de uma aba (values.append — NUNCA update, não
-// sobrescreve nada). `valores` = matriz linha×coluna. valueInputOption=
-// USER_ENTERED faz a API interpretar os valores como se o usuário os tivesse
-// digitado (ex.: "FALSE" vira o booleano FALSE que as colunas checkbox esperam,
-// "captação" continua texto). insertDataOption=INSERT_ROWS empurra linhas novas
-// em vez de sobrescrever as de baixo.
-export async function appendFilas(
+// Acha a primeira fila onde podemos escrever `cantidad` filas consecutivas sem
+// sobrescrever dados. "Vazia" = colunas A e B (FASE+NOME) sem texto — as duas
+// chaves visíveis de uma linha real. Útil porque as Sheets do equipo tem
+// MUITAS filas pré-formatadas vazias (com dropdowns/data validation mas sem
+// valores); o `values.append` da API conta isso como "parte da tabela" e
+// empurra o write pra centenas de filas abaixo. Aqui apontamos exatamente
+// onde escrever, deixando o output visualmente junto aos dados existentes.
+//
+// `filas` é o que `lerFilas` devolve (a partir da fila 2 do spreadsheet).
+// `iColA` e `iColB` são índices das colunas a usar como discriminador
+// (tipicamente iFase e iNome). Retorna 1-indexed (fila 2 = primeira sob o
+// header em A1). Se não há bloco grande o suficiente nas filas existentes,
+// devolve a fila seguinte ao último dado (equivalente a um append "manual").
+export function acharFilaInicio(
+  filas: string[][],
+  iColA: number,
+  iColB: number,
+  cantidad: number,
+): number {
+  const filaVazia = (i: number): boolean => {
+    const row = filas[i] ?? [];
+    const a = (row[iColA] ?? "").trim();
+    const b = (row[iColB] ?? "").trim();
+    return !a && !b;
+  };
+  if (cantidad > 0) {
+    for (let i = 0; i + cantidad <= filas.length; i++) {
+      let todasVazias = true;
+      for (let j = 0; j < cantidad; j++) {
+        if (!filaVazia(i + j)) {
+          todasVazias = false;
+          break;
+        }
+      }
+      if (todasVazias) return i + 2;
+    }
+  }
+  // Fallback: depois do último dado (ignorando ghost-rows vazias finais).
+  let ultimoComDados = 1; // sem dados ainda; vamos retornar 2 se ficar assim
+  for (let i = 0; i < filas.length; i++) {
+    if (!filaVazia(i)) ultimoComDados = i + 2;
+  }
+  return ultimoComDados + 1;
+}
+
+// Escreve filas num range específico via `values.update`. Diferente de um
+// `values.append`: NÃO depende da heurística de "tabela" da Sheets API (que
+// trata filas pré-formatadas com dropdowns como parte da tabela). Combinada
+// com `acharFilaInicio`, escreve exatamente embaixo dos dados existentes,
+// preservando data validation, dropdowns e formato das células sobrescritas.
+//
+// `filaInicio` é 1-indexed (fila 2 = primeira de dados). USER_ENTERED faz a
+// API interpretar valores como se o usuário tivesse digitado ("FALSE" vira
+// boolean para checkboxes, "captação" segue texto, etc.).
+export async function escreverFilas(
   env: AuthEnv,
   sheetId: string,
   aba: string,
+  filaInicio: number,
   valores: string[][],
-): Promise<ResultadoAppend> {
+): Promise<ResultadoEscrita> {
+  if (valores.length === 0) return { updatedRows: 0 };
   const token = await obterAccessToken(env);
-  const range = rangeComAba(aba, "A1");
+  const numCols = valores[0]!.length;
+  const colFim = letraDeColuna(numCols);
+  const filaFim = filaInicio + valores.length - 1;
+  const range = rangeComAba(aba, `A${filaInicio}:${colFim}${filaFim}`);
   const url =
-    `${BASE}/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}:append` +
-    `?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+    `${BASE}/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}` +
+    `?valueInputOption=USER_ENTERED`;
 
   const resposta = await fetch(url, {
-    method: "POST",
+    method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ values: valores }),
   });
@@ -77,12 +130,21 @@ export async function appendFilas(
   }
 
   const dados = (await resposta.json()) as {
-    updates?: { updatedRange?: string; updatedRows?: number };
+    updatedRange?: string;
+    updatedRows?: number;
   };
-  return {
-    updatedRange: dados.updates?.updatedRange,
-    updatedRows: dados.updates?.updatedRows,
-  };
+  return { updatedRange: dados.updatedRange, updatedRows: dados.updatedRows };
+}
+
+// Converte índice 1-based de coluna para letra A1: 1 -> A, 26 -> Z, 27 -> AA.
+function letraDeColuna(n: number): string {
+  let resultado = "";
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    resultado = String.fromCharCode(65 + r) + resultado;
+    n = Math.floor((n - 1) / 26);
+  }
+  return resultado;
 }
 
 // Lista os títulos das abas da spreadsheet. Usa `?fields=sheets.properties.title`

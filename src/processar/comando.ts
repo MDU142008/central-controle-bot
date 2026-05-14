@@ -31,7 +31,7 @@
 
 import type { Context } from "grammy";
 import { listarDocsRecursivo, exportarDocTexto } from "../google/drive";
-import { lerHeaders, lerFilas, appendFilas, listarTitulosAbas } from "../google/sheets";
+import { lerHeaders, lerFilas, escreverFilas, acharFilaInicio, listarTitulosAbas } from "../google/sheets";
 import { extrairAdsDoRoteiro } from "./extrair";
 import {
   numeracaoSequencial,
@@ -162,10 +162,14 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
   await ctx.reply("Recebi. Processando o roteiro… (pode levar uns segundos)");
 
   try {
+    console.log(`[/processar] início, fileId=${fileId}`);
+
     // Pré-processo: descobrir qual é a aba destino na Sheet (não assumimos um
     // nome fixo — pode ser "03. ADS NOVOS", "3 ads novos", "Ads Novos", etc.).
     // Se o usuário passou `aba:<nome>`, validamos que essa aba existe na Sheet.
+    console.log(`[/processar] passo 0: listarTitulosAbas…`);
     const titulosAbas = await listarTitulosAbas(env, env.SHEET_ID);
+    console.log(`[/processar] passo 0 ok: ${titulosAbas.length} abas`);
     let aba: string;
     if (abaArg) {
       if (!titulosAbas.includes(abaArg)) {
@@ -201,21 +205,27 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     }
 
     // 1. Texto do roteiro.
+    console.log(`[/processar] passo 1: exportarDocTexto…`);
     const texto = await exportarDocTexto(env, fileId);
+    console.log(`[/processar] passo 1 ok: ${texto.length} chars`);
     if (!texto.trim()) {
       await ctx.reply("O Doc está vazio ou não pude exportá-lo como texto.");
       return;
     }
 
     // 2. Headers + filas existentes da aba destino.
+    console.log(`[/processar] passo 2a: lerHeaders aba="${aba}"…`);
     const headers = await lerHeaders(env, env.SHEET_ID, aba);
+    console.log(`[/processar] passo 2a ok: ${headers.length} headers`);
     if (headers.length === 0) {
       await ctx.reply(`A aba "${aba}" não tem cabeçalhos — não posso continuar.`);
       return;
     }
     const iNome = headers.findIndex((h) => h.trim().toLowerCase() === "nome");
     const iFase = headers.findIndex((h) => h.trim().toLowerCase() === "fase");
+    console.log(`[/processar] passo 2b: lerFilas…`);
     const filas = await lerFilas(env, env.SHEET_ID, aba);
+    console.log(`[/processar] passo 2b ok: ${filas.length} filas`);
     const nomesExistentes = iNome >= 0 ? filas.map((f) => f[iNome] ?? "").filter(Boolean) : [];
 
     // 3. Fases válidas DERIVADAS DOS DADOS (col FASE das filas existentes), não
@@ -227,7 +237,11 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     // 4. Extração com Sonnet (via AI Gateway se AI_GATEWAY_BASE_URL estiver setado).
     const baseURL =
       env.AI_GATEWAY_BASE_URL && env.AI_GATEWAY_BASE_URL.trim() ? env.AI_GATEWAY_BASE_URL : undefined;
+    console.log(
+      `[/processar] passo 4: Sonnet extrair (${fasesValidas.length} fases válidas, ${texto.length} chars)…`,
+    );
     const ext = await extrairAdsDoRoteiro(env.ANTHROPIC_API_KEY, texto, fasesValidas, baseURL);
+    console.log(`[/processar] passo 4 ok: ${ext.ads.length} ads extraídos, fase=${ext.fase}`);
 
     if (ext.ads.length === 0) {
       await ctx.reply(
@@ -248,7 +262,12 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
         dudasExtracao.push(`ad ${i + 1} (${a.descripcion_corta}): tipo ${a.tipo} (confiança ${a.confianza_tipo})`);
       }
     });
-    if (dudasExtracao.length > 0 || ext.notas.trim()) {
+    // O gate bloqueia escrita SÓ quando há dúvidas de confiança reais (fase ou
+    // tipo com confianza != "alta"). Antes também bloqueava se `notas` viesse
+    // não-vazia, mas Sonnet usa notas pra qualquer comentário (descrições,
+    // contagens, contexto) e isso causava falsos negativos. Agora notas são
+    // informacionais e aparecem como rodapé nas mensagens de dry-run e sucesso.
+    if (dudasExtracao.length > 0) {
       await ctx.reply(
         `Não escrevi nada${escrever ? " (mesmo com --escrever — confiança-gating)" : ""}. ` +
           `Tem coisas neste roteiro que eu não tenho certeza:\n` +
@@ -259,6 +278,10 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       );
       return;
     }
+
+    // Notas informacionais (Sonnet pode anexar contexto mesmo com tudo "alta"):
+    // mostradas no rodapé de palpite / dry-run / sucesso, não bloqueiam.
+    const notasInfo = ext.notas.trim() ? `\n\nNotas do modelo: ${ext.notas}` : "";
 
     // 6. Abreviação da fase pro NOME: primeiro DERIVADA dos NOMEs reais dessa
     // fase na aba; se não há nenhum de onde derivar, cai pra tabela de fallback;
@@ -350,7 +373,8 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
           (tiposNaOrdem.length > 1
             ? `(Vários tipos no roteiro: se quiser fixar o número de um, rode uma vez por tipo passando \`desde:AD<N>\`.)\n`
             : ``) +
-          `Se a nomenclatura ou o número não forem esses, me diga o formato/número correto.`,
+          `Se a nomenclatura ou o número não forem esses, me diga o formato/número correto.` +
+          notasInfo,
       );
       return;
     }
@@ -367,12 +391,18 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
           `• NOMEs (padrão \`${padraoVisto}\` que vejo nas filas existentes):\n` +
           listaNomes +
           `\n\nSe estiver tudo certo, re-corra com:\n${linhaConfirmar}\n` +
-          `Se a nomenclatura não for essa, me avise antes de confirmar.`,
+          `Se a nomenclatura não for essa, me avise antes de confirmar.` +
+          notasInfo,
       );
       return;
     }
 
-    // 9. --escrever e nada bloqueia -> escreve de verdade (append).
+    // 9. --escrever e nada bloqueia -> escreve de verdade.
+    // Usamos `acharFilaInicio` + `escreverFilas` (values.update) em vez de
+    // values.append: as Sheets do equipo tem filas pré-formatadas vazias
+    // (com dropdowns mas sem valores) que o append da API conta como "parte
+    // da tabela", empurrando o write 50+ filas abaixo do último dado visível.
+    // values.update num range específico fica visualmente junto aos dados.
     const novasFilas = buildFilasParaSheet({
       headers,
       fase: ext.fase,
@@ -380,16 +410,21 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       docNome,
       responsavel,
     });
-    await appendFilas(env, env.SHEET_ID, aba, novasFilas);
+    const filaInicio = acharFilaInicio(filas, iFase, iNome, novasFilas.length);
+    console.log(`[/processar] passo 5: escreverFilas em A${filaInicio} (${novasFilas.length} filas)…`);
+    const resultado = await escreverFilas(env, env.SHEET_ID, aba, filaInicio, novasFilas);
+    console.log(`[/processar] passo 5 ok: ${resultado.updatedRange ?? "(sem range)"}`);
 
     await ctx.reply(
-      `✅ Pronto. Escrevi ${novasFilas.length} fila(s) em "${aba}":\n` +
+      `✅ Pronto. Escrevi ${novasFilas.length} fila(s) em "${aba}" (range ${resultado.updatedRange ?? `A${filaInicio}`}):\n` +
         listaNomes +
         `\nFase: ${ext.fase}. Status: aberto. Responsável: ${responsavel || "(vazio)"}. Origem: ${docNome}.\n\n` +
         `Gerei estes NOMEs seguindo o padrão \`${padraoVisto}\` que vejo nas filas existentes desta fase. ` +
-        `Se a nomenclatura não for essa, me avise — posso corrigir (apagar/reescrever) se você pedir.`,
+        `Se a nomenclatura não for essa, me avise — posso corrigir (apagar/reescrever) se você pedir.` +
+        notasInfo,
     );
   } catch (err) {
+    console.error(`[/processar] erro:`, err);
     await ctx.reply(`Erro em /processar: ${mensagemDeErro(err)}`);
   }
 }
