@@ -147,21 +147,102 @@ function letraDeColuna(n: number): string {
   return resultado;
 }
 
-// Lista os títulos das abas da spreadsheet. Usa `?fields=sheets.properties.title`
-// pra trazer só os nomes (sem grid/formatos) — dezenas a centenas de KB mais
-// leve que o GET sem filtro. Ordem da resposta = ordem das abas na Sheet.
-export async function listarTitulosAbas(env: AuthEnv, sheetId: string): Promise<string[]> {
+export interface AbaInfo {
+  title: string;
+  sheetId: number; // o gid numérico — necessário para batchUpdate (chips etc.)
+}
+
+// Lista as abas da spreadsheet com seus títulos e sheetIds numéricos. Usa
+// `?fields=sheets.properties(title,sheetId)` pra trazer só o necessário —
+// dezenas a centenas de KB mais leve que o GET sem filtro. Ordem da resposta
+// = ordem das abas na Sheet.
+export async function listarAbas(env: AuthEnv, sheetId: string): Promise<AbaInfo[]> {
   const token = await obterAccessToken(env);
-  const url = `${BASE}/${encodeURIComponent(sheetId)}?fields=sheets.properties.title`;
+  const url = `${BASE}/${encodeURIComponent(sheetId)}?fields=sheets.properties(title,sheetId)`;
   const resposta = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!resposta.ok) {
     const corpo = await resposta.text();
     throw new Error(`Falha ao listar abas (status ${resposta.status}): ${corpo}`);
   }
   const dados = (await resposta.json()) as {
-    sheets?: { properties?: { title?: string } }[];
+    sheets?: { properties?: { title?: string; sheetId?: number } }[];
   };
-  return (dados.sheets ?? []).map((s) => s.properties?.title ?? "").filter(Boolean);
+  return (dados.sheets ?? [])
+    .map((s) => ({ title: s.properties?.title ?? "", sheetId: s.properties?.sheetId ?? 0 }))
+    .filter((a) => a.title);
+}
+
+export interface ChipDoc {
+  url: string; // URL canônica do Doc (ex.: https://docs.google.com/document/d/<id>/edit)
+  mimeType?: string; // default: application/vnd.google-apps.document
+}
+
+// Escreve smart chips de Drive numa coluna usando `spreadsheets.batchUpdate`
+// com `updateCells.chipRuns` + `richLinkProperties`. Isto produz EXATAMENTE
+// o mesmo chip que aparece quando alguém cola um link de Drive no Sheet via UI
+// (icone + nome truncado, hover preview) — não a fórmula HYPERLINK ali (que é
+// só texto azul). Cada célula recebe um chip ancorado em "@" (caractere
+// placeholder que fica oculto pelo chip ao renderizar).
+//
+// `abaSheetId` é o gid numérico (de `listarAbas`), NÃO o nome da aba.
+// `filaInicio` é 1-indexed (mesma convenção de escreverFilas).
+// `colIndex` é 0-indexed (col A = 0, B = 1, D = 3, …).
+// `chips.length` define quantas linhas se atualiza (filaInicio .. filaInicio+N-1).
+export async function escreverChipsDocs(
+  env: AuthEnv,
+  spreadsheetId: string,
+  abaSheetId: number,
+  filaInicio: number,
+  colIndex: number,
+  chips: ChipDoc[],
+): Promise<void> {
+  if (chips.length === 0) return;
+  const token = await obterAccessToken(env);
+  const url = `${BASE}/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+  const rows = chips.map((c) => ({
+    values: [
+      {
+        userEnteredValue: { stringValue: "@" },
+        chipRuns: [
+          {
+            startIndex: 0,
+            chip: {
+              richLinkProperties: {
+                uri: c.url,
+                mimeType: c.mimeType ?? "application/vnd.google-apps.document",
+              },
+            },
+          },
+        ],
+      },
+    ],
+  }));
+  const body = {
+    requests: [
+      {
+        updateCells: {
+          range: {
+            sheetId: abaSheetId,
+            startRowIndex: filaInicio - 1, // batchUpdate usa 0-indexed
+            endRowIndex: filaInicio - 1 + chips.length,
+            startColumnIndex: colIndex,
+            endColumnIndex: colIndex + 1,
+          },
+          rows,
+          fields: "userEnteredValue,chipRuns",
+        },
+      },
+    ],
+  };
+  const resposta = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resposta.ok) {
+    const corpo = await resposta.text();
+    throw new Error(`Falha ao escrever chips (status ${resposta.status}): ${corpo}`);
+  }
 }
 
 // --- Compat: o smoke test da Etapa 2 (/teste_sheet) ainda usa isto ---

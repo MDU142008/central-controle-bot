@@ -11,7 +11,8 @@ import {
   lerFilas,
   escreverFilas,
   acharFilaInicio,
-  listarTitulosAbas,
+  listarAbas,
+  escreverChipsDocs,
 } from "../src/google/sheets";
 
 const env = { GOOGLE_SERVICE_ACCOUNT_JSON: "{}" } as any;
@@ -206,47 +207,134 @@ describe("escreverFilas", () => {
   });
 });
 
-describe("listarTitulosAbas", () => {
-  it("hace GET ?fields=sheets.properties.title y devuelve los títulos en orden", async () => {
+describe("listarAbas", () => {
+  it("hace GET ?fields=sheets.properties(title,sheetId) y devuelve {title, sheetId} en orden", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       const u = decodeURIComponent(url);
-      expect(u).toContain(`/spreadsheets/${SHEET}?fields=sheets.properties.title`);
+      expect(u).toContain(`/spreadsheets/${SHEET}?fields=sheets.properties(title,sheetId)`);
       return respostaJson({
         sheets: [
-          { properties: { title: "00. Links importantes" } },
-          { properties: { title: "03. ADS NOVOS" } },
-          { properties: { title: "04. ADS REAP" } },
+          { properties: { title: "00. Links importantes", sheetId: 100 } },
+          { properties: { title: "03. ADS NOVOS", sheetId: 1698547799 } },
+          { properties: { title: "04. ADS REAP", sheetId: 4242 } },
         ],
       });
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const titulos = await listarTitulosAbas(env, SHEET);
-    expect(titulos).toEqual(["00. Links importantes", "03. ADS NOVOS", "04. ADS REAP"]);
+    const abas = await listarAbas(env, SHEET);
+    expect(abas).toEqual([
+      { title: "00. Links importantes", sheetId: 100 },
+      { title: "03. ADS NOVOS", sheetId: 1698547799 },
+      { title: "04. ADS REAP", sheetId: 4242 },
+    ]);
     expect(fetchMock.mock.calls[0]![1]).toMatchObject({
       headers: { Authorization: "Bearer TOKEN_FALSO" },
     });
   });
 
-  it("filtra entradas sem title (ignora propriedades vazias)", async () => {
+  it("filtra entradas sem title; sheetId default 0 quando ausente", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
         respostaJson({
-          sheets: [{ properties: { title: "A" } }, { properties: {} }, {}],
+          sheets: [
+            { properties: { title: "A", sheetId: 7 } },
+            { properties: { title: "B" } }, // sem sheetId -> 0
+            { properties: {} }, // sem title -> filtrada
+            {},
+          ],
         }),
       ),
     );
-    expect(await listarTitulosAbas(env, SHEET)).toEqual(["A"]);
+    expect(await listarAbas(env, SHEET)).toEqual([
+      { title: "A", sheetId: 7 },
+      { title: "B", sheetId: 0 },
+    ]);
   });
 
   it("devuelve [] si la respuesta no trae sheets", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => respostaJson({})));
-    expect(await listarTitulosAbas(env, SHEET)).toEqual([]);
+    expect(await listarAbas(env, SHEET)).toEqual([]);
   });
 
   it("lanza si la API responde con error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("denied", { status: 403 })));
-    await expect(listarTitulosAbas(env, SHEET)).rejects.toThrow(/403/);
+    await expect(listarAbas(env, SHEET)).rejects.toThrow(/403/);
+  });
+});
+
+describe("escreverChipsDocs", () => {
+  it("POST :batchUpdate con updateCells.chipRuns; range 0-indexed; chip por fila", async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      const u = decodeURIComponent(url);
+      expect(u).toContain(`/spreadsheets/${SHEET}:batchUpdate`);
+      expect(init.method).toBe("POST");
+      const body = JSON.parse(init.body as string);
+      expect(body.requests).toHaveLength(1);
+      const updateCells = body.requests[0].updateCells;
+      // filaInicio=6 (1-indexed) -> startRowIndex=5 (0-indexed); 2 chips -> endRowIndex=7
+      expect(updateCells.range).toEqual({
+        sheetId: 42,
+        startRowIndex: 5,
+        endRowIndex: 7,
+        startColumnIndex: 3,
+        endColumnIndex: 4,
+      });
+      expect(updateCells.fields).toBe("userEnteredValue,chipRuns");
+      expect(updateCells.rows).toHaveLength(2);
+      const cell0 = updateCells.rows[0].values[0];
+      expect(cell0.userEnteredValue).toEqual({ stringValue: "@" });
+      expect(cell0.chipRuns).toEqual([
+        {
+          startIndex: 0,
+          chip: {
+            richLinkProperties: {
+              uri: "https://docs.google.com/document/d/AAA/edit",
+              mimeType: "application/vnd.google-apps.document",
+            },
+          },
+        },
+      ]);
+      const cell1 = updateCells.rows[1].values[0];
+      expect(cell1.chipRuns[0].chip.richLinkProperties.uri).toBe(
+        "https://docs.google.com/document/d/BBB/edit",
+      );
+      return respostaJson({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await escreverChipsDocs(env, SHEET, 42, 6, 3, [
+      { url: "https://docs.google.com/document/d/AAA/edit" },
+      { url: "https://docs.google.com/document/d/BBB/edit" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("respeita mimeType custom quando informado", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      const chipRun = body.requests[0].updateCells.rows[0].values[0].chipRuns[0];
+      expect(chipRun.chip.richLinkProperties.mimeType).toBe("application/vnd.google-apps.spreadsheet");
+      return respostaJson({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await escreverChipsDocs(env, SHEET, 42, 6, 3, [
+      { url: "https://docs.google.com/spreadsheets/d/XYZ/edit", mimeType: "application/vnd.google-apps.spreadsheet" },
+    ]);
+  });
+
+  it("no-op (sem chamar fetch) quando chips está vazio", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await escreverChipsDocs(env, SHEET, 42, 6, 3, []);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lanza si la API responde com error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("denied", { status: 403 })));
+    await expect(
+      escreverChipsDocs(env, SHEET, 42, 6, 3, [{ url: "x" }]),
+    ).rejects.toThrow(/403/);
   });
 });

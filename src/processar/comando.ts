@@ -31,7 +31,14 @@
 
 import type { Context } from "grammy";
 import { listarDocsRecursivo, exportarDocTexto } from "../google/drive";
-import { lerHeaders, lerFilas, escreverFilas, acharFilaInicio, listarTitulosAbas } from "../google/sheets";
+import {
+  lerHeaders,
+  lerFilas,
+  escreverFilas,
+  escreverChipsDocs,
+  acharFilaInicio,
+  listarAbas,
+} from "../google/sheets";
 import { extrairAdsDoRoteiro } from "./extrair";
 import {
   numeracaoSequencial,
@@ -167,8 +174,9 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     // Pré-processo: descobrir qual é a aba destino na Sheet (não assumimos um
     // nome fixo — pode ser "03. ADS NOVOS", "3 ads novos", "Ads Novos", etc.).
     // Se o usuário passou `aba:<nome>`, validamos que essa aba existe na Sheet.
-    console.log(`[/processar] passo 0: listarTitulosAbas…`);
-    const titulosAbas = await listarTitulosAbas(env, env.SHEET_ID);
+    console.log(`[/processar] passo 0: listarAbas…`);
+    const abasInfo = await listarAbas(env, env.SHEET_ID);
+    const titulosAbas = abasInfo.map((a) => a.title);
     console.log(`[/processar] passo 0 ok: ${titulosAbas.length} abas`);
     let aba: string;
     if (abaArg) {
@@ -203,6 +211,9 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
       }
       aba = r.titulo;
     }
+    // gid numérico (sheetId) da aba escolhida — necessário para o batchUpdate
+    // que escreve os smart chips de Drive na col LINK COPY (vide passo 5b).
+    const abaSheetId = abasInfo.find((a) => a.title === aba)?.sheetId ?? null;
 
     // 1. Texto do roteiro.
     console.log(`[/processar] passo 1: exportarDocTexto…`);
@@ -223,6 +234,11 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     }
     const iNome = headers.findIndex((h) => h.trim().toLowerCase() === "nome");
     const iFase = headers.findIndex((h) => h.trim().toLowerCase() === "fase");
+    // "LINK COPY" não tem header na linha 1 (é a sub-coluna sob "COPY"); na
+    // prática é a coluna logo depois de COPY. Usado pra escrever smart chips
+    // de Drive depois de escreverFilas. Se não achamos COPY -> -1, skip chips.
+    const iCopy = headers.findIndex((h) => h.trim().toLowerCase() === "copy");
+    const iLinkCopy = iCopy >= 0 ? iCopy + 1 : -1;
     console.log(`[/processar] passo 2b: lerFilas…`);
     const filas = await lerFilas(env, env.SHEET_ID, aba);
     console.log(`[/processar] passo 2b ok: ${filas.length} filas`);
@@ -416,6 +432,25 @@ export async function tratarProcessar(ctx: Context, env: ProcessarEnv, args: str
     console.log(`[/processar] passo 5: escreverFilas em A${filaInicio} (${novasFilas.length} filas)…`);
     const resultado = await escreverFilas(env, env.SHEET_ID, aba, filaInicio, novasFilas);
     console.log(`[/processar] passo 5 ok: ${resultado.updatedRange ?? "(sem range)"}`);
+
+    // 5b. Upgrade de LINK COPY: a fórmula HYPERLINK que escreverFilas deixou
+    // funciona (link clicável azul), mas o equipo cola smart chips de Drive
+    // (icone + nome truncado). batchUpdate com chipRuns escreve o mesmo chip.
+    // Best-effort: se falha, ficamos com o HYPERLINK como fallback funcional.
+    if (iLinkCopy >= 0 && abaSheetId !== null) {
+      try {
+        console.log(`[/processar] passo 5b: escreverChipsDocs col=${iLinkCopy}…`);
+        const chips = novasFilas.map(() => ({ url: docUrl }));
+        await escreverChipsDocs(env, env.SHEET_ID, abaSheetId, filaInicio, iLinkCopy, chips);
+        console.log(`[/processar] passo 5b ok: ${chips.length} chips`);
+      } catch (chipErr) {
+        console.error(`[/processar] passo 5b falhou (fica HYPERLINK como fallback):`, chipErr);
+      }
+    } else {
+      console.log(
+        `[/processar] passo 5b: skip (iLinkCopy=${iLinkCopy}, abaSheetId=${abaSheetId})`,
+      );
+    }
 
     await ctx.reply(
       `✅ Pronto. Escrevi ${novasFilas.length} fila(s) em "${aba}" (range ${resultado.updatedRange ?? `A${filaInicio}`}):\n` +
