@@ -34,3 +34,34 @@ DRIVE_FOLDER_ID = "1Pkop-z2OsjzcwIH2bEaRu9jhhvr2KB0G"
 #      secret: `wrangler secret put AI_GATEWAY_BASE_URL`). A ANTHROPIC_API_KEY
 #      segue como secret, no header normal — o gateway a reenvia.
 AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1/b10b614b08eeb495d4f32c607ed84d43/cc-bot/anthropic"
+
+# --- Etapa 5: D1 mirror (Sheet → D1, sync a cada 5 min) ---------------------
+#
+# Binding `DB` para a D1 que armazena o mirror de "03. ADS NOVOS".
+# Descomentar e preencher `database_id` quando a DB existir.
+#
+# Comandos para configurar (Manuel roda):
+#   1. Criar a DB:
+#        npx wrangler d1 create cc-bot-mirror
+#      (Sai um snippet [[d1_databases]] com o database_id real. Cola aqui.)
+#
+#   2. Aplicar o schema inicial (depois de descomentar o bloco abaixo):
+#        npx wrangler d1 execute cc-bot-mirror --file migrations/001-initial.sql --remote
+#      (Usar --local para testar em vez de --remote.)
+#
+#   3. Deploy: pnpm run deploy
+#      O cron arranca automático (cada 5 min) após o deploy.
+#
+#   4. Verificar: /teste_d1 no Telegram dispara sync on-demand e mostra
+#      contadores; /status_d1 consulta o último _sync_log.
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "cc-bot-mirror"
+# database_id = "<paste-do-output-do-wrangler-d1-create>"
+
+# Cron Trigger — chama o handler `scheduled` em src/index.ts a cada 5 minutos.
+# Se DB não está configurada (binding ausente), o handler pula silenciosamente.
+# Sintaxe: minute hour day-of-month month day-of-week (UTC).
+[triggers]
+crons = ["*/5 * * * *"]

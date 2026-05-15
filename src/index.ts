@@ -4,11 +4,16 @@ import Anthropic from "@anthropic-ai/sdk";
 
 import { tratarTesteSheet } from "./comandos/teste_sheet";
 import { tratarTesteDrive } from "./comandos/teste_drive";
+import { tratarTesteD1, tratarStatusD1 } from "./comandos/teste_d1";
 import { tratarProcessar, tratarListarDocs } from "./processar/comando";
+import { sincronizarAdsNovos } from "./d1/sync";
 
 // Bindings do Cloudflare Worker. Os secrets vêm de `wrangler secret put`
 // (produção) ou de `.dev.vars` (local). ALLOWED_CHAT_IDS, SHEET_ID,
 // DRIVE_FOLDER_ID e (opcionalmente) AI_GATEWAY_BASE_URL vêm de wrangler.toml.
+// DB (D1 binding) vem de [[d1_databases]] em wrangler.toml; opcional pra
+// permitir deploy antes de criar a D1 — os comandos /teste_d1, /status_d1 e
+// o cron `scheduled` se autoprotegem se DB for undefined.
 interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
@@ -20,6 +25,8 @@ interface Env {
   // Endpoint do Cloudflare AI Gateway para a Anthropic (opcional). "" ou ausente
   // = não configurado (cliente Anthropic direto). Ver wrangler.toml.
   AI_GATEWAY_BASE_URL?: string;
+  // D1 mirror de "03. ADS NOVOS" (Etapa 5). Opcional até a DB ser criada.
+  DB?: D1Database;
 }
 
 // Prompt de teste compartilhado pelos comandos /teste_claude e /teste_haiku.
@@ -178,6 +185,20 @@ app.post("/webhook", async (c) => {
   bot.command("teste_sheet", (ctx) => tratarTesteSheet(ctx, c.env));
   bot.command("teste_drive", (ctx) => tratarTesteDrive(ctx, c.env));
 
+  // /teste_d1 dispara um sync Sheet → D1 sob demanda e reporta contadores.
+  // /status_d1 consulta o último sync sem disparar nada. Self-check do mirror.
+  bot.command("teste_d1", (ctx) => {
+    if (!c.env.DB) {
+      return ctx.reply("D1 não configurado. Crie a DB e adicione o binding em wrangler.toml.");
+    }
+    c.executionCtx.waitUntil(
+      tratarTesteD1(ctx, c.env as Required<Pick<Env, "DB">> & Env).catch((err) =>
+        console.error("[/teste_d1] erro não capturado:", err),
+      ),
+    );
+  });
+  bot.command("status_d1", (ctx) => tratarStatusD1(ctx, c.env as Required<Pick<Env, "DB">> & Env));
+
   // /listar_docs e /processar — o vertical slice da Etapa 3.
   // ctx.match traz o texto depois do comando ("" se não houver).
   bot.command("listar_docs", (ctx) => tratarListarDocs(ctx, c.env));
@@ -207,4 +228,34 @@ app.post("/webhook", async (c) => {
   return handle(c);
 });
 
-export default app;
+// Cron Trigger (cada 5 min via wrangler.toml). Dispara o sync Sheet → D1.
+// `ctx.waitUntil` mantém o Worker vivo até `sincronizarAdsNovos` resolver
+// (cron handlers têm 30s de CPU + waitUntil — folgado pra um sync típico).
+// Se a DB não está configurada (binding ausente), pula silenciosamente
+// — o cron continua rodando mas no-op, sem ruído nos logs.
+async function rodarCronSync(env: Env, ctx: ExecutionContext): Promise<void> {
+  if (!env.DB) {
+    console.log("[scheduled] DB binding ausente, skip do sync");
+    return;
+  }
+  ctx.waitUntil(
+    sincronizarAdsNovos(env as Env & { DB: D1Database }, "cron")
+      .then((res) => {
+        if (!res.ok) {
+          console.error(`[scheduled] sync error: ${res.errorMsg}`);
+        } else {
+          console.log(
+            `[scheduled] sync ok: aba="${res.sourceAba}", ${res.rowsSynced} linhas em ${res.durationMs}ms`,
+          );
+        }
+      })
+      .catch((err) => console.error("[scheduled] sync threw:", err)),
+  );
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): void {
+    void rodarCronSync(env, ctx);
+  },
+} satisfies ExportedHandler<Env>;
